@@ -1,0 +1,8 @@
+{
+  "name": "LocalConvert",
+  "description": "A free, client-side file converter (JPG, PNG, WEBP) that relies entirely on your browser. No APIs, no uploads, purely local processing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
