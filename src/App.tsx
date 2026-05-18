@@ -1,39 +1,167 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { 
-  UploadCloud, X, FileImage, Download, CheckCircle2, AlertCircle, ArrowRight, 
-  ImageIcon, Layers, Settings2, SlidersHorizontal, PackageOpen 
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {
+  AlertCircle,
+  ArrowRight,
+  BadgeCheck,
+  CheckCircle2,
+  ClipboardPaste,
+  Download,
+  FileArchive,
+  Gauge,
+  ImageIcon,
+  ImagePlus,
+  Layers,
+  Maximize2,
+  PackageOpen,
+  RefreshCw,
+  Settings2,
+  SlidersHorizontal,
+  Sparkles,
+  Trash2,
+  UploadCloud,
+  X,
 } from 'lucide-react';
-import { AnimatePresence, motion } from 'motion/react';
+import {AnimatePresence, motion} from 'motion/react';
 import JSZip from 'jszip';
 
 type TargetFormat = 'image/jpeg' | 'image/png' | 'image/webp';
+type QueueStatus = 'idle' | 'converting' | 'success' | 'error';
+
+interface ImageDimensions {
+  width: number;
+  height: number;
+}
 
 interface FileQueueItem {
   id: string;
   originalFile: File;
   targetFormat: TargetFormat;
-  status: 'idle' | 'converting' | 'success' | 'error';
-  errorMessage?: string;
+  status: QueueStatus;
+  previewUrl: string;
+  originalDimensions?: ImageDimensions;
+  outputDimensions?: ImageDimensions;
   outputUrl?: string;
   outputName?: string;
   outputBlob?: Blob;
+  outputSize?: number;
+  errorMessage?: string;
 }
 
-const SUPPORTED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'image/gif'];
-const FORMAT_OPTIONS: { label: string; value: TargetFormat }[] = [
-  { label: 'JPG', value: 'image/jpeg' },
-  { label: 'PNG', value: 'image/png' },
-  { label: 'WEBP', value: 'image/webp' }
+interface ResizePreset {
+  label: string;
+  width: number;
+  height: number;
+  enabled: boolean;
+}
+
+const SUPPORTED_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/bmp',
+  'image/gif',
+  'image/svg+xml',
+  'image/avif',
+];
+
+const SUPPORTED_EXTENSIONS = /\.(jpe?g|png|webp|bmp|gif|svg|avif)$/i;
+
+const FORMAT_OPTIONS: {label: string; value: TargetFormat; detail: string}[] = [
+  {label: 'JPG', value: 'image/jpeg', detail: 'Small, shareable photos'},
+  {label: 'PNG', value: 'image/png', detail: 'Sharp with transparency'},
+  {label: 'WEBP', value: 'image/webp', detail: 'Modern web delivery'},
+];
+
+const RESIZE_PRESETS: ResizePreset[] = [
+  {label: 'Original', width: 1920, height: 1080, enabled: false},
+  {label: '4K', width: 3840, height: 2160, enabled: true},
+  {label: 'HD', width: 1920, height: 1080, enabled: true},
+  {label: 'Social', width: 1080, height: 1080, enabled: true},
 ];
 
 function getFormatExt(mime: string) {
   switch (mime) {
-    case 'image/jpeg': return 'jpg';
-    case 'image/png': return 'png';
-    case 'image/webp': return 'webp';
-    case 'image/bmp': return 'bmp';
-    case 'image/gif': return 'gif';
-    default: return 'img';
+    case 'image/jpeg':
+      return 'jpg';
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/bmp':
+      return 'bmp';
+    case 'image/gif':
+      return 'gif';
+    case 'image/svg+xml':
+      return 'svg';
+    case 'image/avif':
+      return 'avif';
+    default:
+      return 'img';
+  }
+}
+
+function getSourceLabel(file: File) {
+  const knownType = getFormatExt(file.type);
+  if (knownType !== 'img') return knownType.toUpperCase();
+
+  const extension = file.name.match(/\.([^.]+)$/)?.[1];
+  return extension ? extension.toUpperCase() : 'IMAGE';
+}
+
+function getBaseName(fileName: string) {
+  const extensionIndex = fileName.lastIndexOf('.');
+  return extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName;
+}
+
+function cleanPrefix(prefix: string) {
+  return prefix
+    .trim()
+    .replace(/[^\w.-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+}
+
+function createId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function isSupportedImage(file: File) {
+  return (
+    SUPPORTED_TYPES.includes(file.type) ||
+    file.type.startsWith('image/') ||
+    SUPPORTED_EXTENSIONS.test(file.name)
+  );
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes === 0) return '0 B';
+
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+}
+
+function formatDimensions(dimensions?: ImageDimensions) {
+  if (!dimensions) return 'Reading size';
+  return `${dimensions.width} x ${dimensions.height}`;
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function revokeItemUrls(item: FileQueueItem, outputOnly = false) {
+  if (!outputOnly) {
+    URL.revokeObjectURL(item.previewUrl);
+  }
+
+  if (item.outputUrl) {
+    URL.revokeObjectURL(item.outputUrl);
   }
 }
 
@@ -41,177 +169,324 @@ export default function App() {
   const [queue, setQueue] = useState<FileQueueItem[]>([]);
   const [globalFormat, setGlobalFormat] = useState<TargetFormat>('image/webp');
   const [isDragging, setIsDragging] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  
-  // Settings state
-  const [quality, setQuality] = useState(0.9);
+  const [showSettings, setShowSettings] = useState(true);
+  const [quality, setQuality] = useState(0.86);
   const [resizeEnabled, setResizeEnabled] = useState(false);
   const [maxWidth, setMaxWidth] = useState(1920);
+  const [maxHeight, setMaxHeight] = useState(1080);
+  const [jpegBackground, setJpegBackground] = useState('#ffffff');
+  const [filenamePrefix, setFilenamePrefix] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const queueRef = useRef<FileQueueItem[]>([]);
 
-  // Clean up object URLs to prevent memory leaks
   useEffect(() => {
-    return () => {
-      queue.forEach(item => {
-        if (item.outputUrl) {
-          URL.revokeObjectURL(item.outputUrl);
-        }
-      });
-    };
+    queueRef.current = queue;
   }, [queue]);
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  useEffect(() => {
+    return () => {
+      queueRef.current.forEach(item => revokeItemUrls(item));
+    };
+  }, []);
+
+  const readDimensions = useCallback((item: FileQueueItem) => {
+    const img = new Image();
+    img.onload = () => {
+      setQueue(prev =>
+        prev.map(queueItem =>
+          queueItem.id === item.id
+            ? {
+                ...queueItem,
+                originalDimensions: {
+                  width: img.naturalWidth || img.width,
+                  height: img.naturalHeight || img.height,
+                },
+              }
+            : queueItem,
+        ),
+      );
+    };
+    img.src = item.previewUrl;
+  }, []);
+
+  const addFilesToQueue = useCallback(
+    (files: FileList | File[]) => {
+      const validFiles = Array.from(files).filter(isSupportedImage);
+      if (validFiles.length === 0) return;
+
+      const newItems: FileQueueItem[] = validFiles.map(file => ({
+        id: createId(),
+        originalFile: file,
+        targetFormat: globalFormat,
+        status: 'idle',
+        previewUrl: URL.createObjectURL(file),
+      }));
+
+      setQueue(prev => [...prev, ...newItems]);
+      newItems.forEach(readDimensions);
+    },
+    [globalFormat, readDimensions],
+  );
+
+  useEffect(() => {
+    const handlePaste = (event: ClipboardEvent) => {
+      const files = Array.from(event.clipboardData?.files ?? []);
+      if (files.some(isSupportedImage)) {
+        addFilesToQueue(files);
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [addFilesToQueue]);
+
+  const handleDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
     setIsDragging(true);
   }, []);
 
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleDragLeave = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
     setIsDragging(false);
   }, []);
 
-  const addFilesToQueue = (files: FileList | File[]) => {
-    const validFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
-    
-    if (validFiles.length === 0) return;
+  const handleDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setIsDragging(false);
 
-    const newItems: FileQueueItem[] = validFiles.map(file => ({
-      id: Math.random().toString(36).substring(7) + Date.now(),
-      originalFile: file,
-      targetFormat: globalFormat,
-      status: 'idle'
-    }));
+      if (event.dataTransfer.files.length > 0) {
+        addFilesToQueue(event.dataTransfer.files);
+      }
+    },
+    [addFilesToQueue],
+  );
 
-    setQueue(prev => [...prev, ...newItems]);
+  const handleFileInput = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files.length > 0) {
+      addFilesToQueue(event.target.files);
+      event.target.value = '';
+    }
   };
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      addFilesToQueue(e.dataTransfer.files);
-    }
-  }, [globalFormat]);
+  const resetItemOutput = (item: FileQueueItem): FileQueueItem => {
+    if (item.outputUrl) URL.revokeObjectURL(item.outputUrl);
 
-  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      addFilesToQueue(e.target.files);
-    }
+    return {
+      ...item,
+      status: 'idle',
+      errorMessage: undefined,
+      outputUrl: undefined,
+      outputBlob: undefined,
+      outputName: undefined,
+      outputSize: undefined,
+      outputDimensions: undefined,
+    };
   };
 
   const updateItemFormat = (id: string, format: TargetFormat) => {
-    setQueue(prev => prev.map(item => 
-      item.id === id ? { ...item, targetFormat: format, status: 'idle', outputUrl: undefined, outputBlob: undefined } : item
-    ));
+    setQueue(prev =>
+      prev.map(item =>
+        item.id === id
+          ? {
+              ...resetItemOutput(item),
+              targetFormat: format,
+            }
+          : item,
+      ),
+    );
+  };
+
+  const resetItem = (id: string) => {
+    setQueue(prev => prev.map(item => (item.id === id ? resetItemOutput(item) : item)));
   };
 
   const removeItem = (id: string) => {
     setQueue(prev => {
-      const item = prev.find(i => i.id === id);
-      if (item?.outputUrl) {
-        URL.revokeObjectURL(item.outputUrl);
-      }
-      return prev.filter(i => i.id !== id);
+      const item = prev.find(queueItem => queueItem.id === id);
+      if (item) revokeItemUrls(item);
+      return prev.filter(queueItem => queueItem.id !== id);
     });
   };
 
   const clearAll = () => {
-    queue.forEach(item => {
-      if (item.outputUrl) URL.revokeObjectURL(item.outputUrl);
-    });
+    queue.forEach(item => revokeItemUrls(item));
     setQueue([]);
   };
 
-  const convertFile = async (item: FileQueueItem): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      const reader = new FileReader();
+  const clearCompleted = () => {
+    setQueue(prev => {
+      prev.filter(item => item.status === 'success').forEach(item => revokeItemUrls(item));
+      return prev.filter(item => item.status !== 'success');
+    });
+  };
 
-      reader.onload = (e) => {
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          
-          let targetW = img.width;
-          let targetH = img.height;
-
-          // Resize logic
-          if (resizeEnabled && maxWidth > 0 && img.width > maxWidth) {
-            const ratio = maxWidth / img.width;
-            targetW = maxWidth;
-            targetH = img.height * ratio;
-          }
-
-          canvas.width = targetW;
-          canvas.height = targetH;
-          const ctx = canvas.getContext('2d');
-          
-          if (!ctx) {
-            reject(new Error("Failed to get 2D context"));
-            return;
-          }
-
-          // Fill with white to prevent transparent pixels becoming black in JPEG
-          if (item.targetFormat === 'image/jpeg') {
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-          }
-
-          ctx.drawImage(img, 0, 0, targetW, targetH);
-
-          canvas.toBlob((blob) => {
-            if (blob) {
-              const url = URL.createObjectURL(blob);
-              const originalName = item.originalFile.name;
-              const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
-              const outputName = `${baseName}.${getFormatExt(item.targetFormat)}`;
-              
-              setQueue(prev => prev.map(q => 
-                q.id === item.id 
-                  ? { ...q, status: 'success', outputUrl: url, outputName, outputBlob: blob } 
-                  : q
-              ));
-              resolve();
-            } else {
-              reject(new Error("Blob creation failed"));
+  const handleGlobalFormatChange = (newFormat: TargetFormat) => {
+    setGlobalFormat(newFormat);
+    setQueue(prev =>
+      prev.map(item =>
+        item.status === 'idle' || item.status === 'error'
+          ? {
+              ...resetItemOutput(item),
+              targetFormat: newFormat,
             }
-          }, item.targetFormat, item.targetFormat === 'image/png' ? undefined : quality);
-        };
-        img.onerror = () => reject(new Error("Failed to load image for conversion"));
-        if (typeof e.target?.result === 'string') {
-          img.src = e.target.result;
-        } else {
-          reject(new Error("Failed to read file data"));
+          : item,
+      ),
+    );
+  };
+
+  const applyResizePreset = (preset: ResizePreset) => {
+    setResizeEnabled(preset.enabled);
+    setMaxWidth(preset.width);
+    setMaxHeight(preset.height);
+  };
+
+  const getTargetDimensions = (width: number, height: number): ImageDimensions => {
+    if (!resizeEnabled) {
+      return {width, height};
+    }
+
+    const widthLimit = Math.max(10, maxWidth);
+    const heightLimit = Math.max(10, maxHeight);
+    const ratio = Math.min(widthLimit / width, heightLimit / height, 1);
+
+    return {
+      width: Math.max(1, Math.round(width * ratio)),
+      height: Math.max(1, Math.round(height * ratio)),
+    };
+  };
+
+  const buildOutputName = (file: File, targetFormat: TargetFormat) => {
+    const prefix = cleanPrefix(filenamePrefix);
+    const baseName = getBaseName(file.name);
+    const extension = getFormatExt(targetFormat);
+    return `${prefix ? `${prefix}-` : ''}${baseName}.${extension}`;
+  };
+
+  const convertFile = async (item: FileQueueItem) => {
+    return new Promise<{
+      blob: Blob;
+      dimensions: ImageDimensions;
+      outputName: string;
+      outputUrl: string;
+      outputSize: number;
+    }>((resolve, reject) => {
+      const img = new Image();
+
+      img.onload = () => {
+        const sourceWidth = img.naturalWidth || img.width;
+        const sourceHeight = img.naturalHeight || img.height;
+
+        if (!sourceWidth || !sourceHeight) {
+          reject(new Error('The image has no readable dimensions.'));
+          return;
         }
+
+        const dimensions = getTargetDimensions(sourceWidth, sourceHeight);
+        const canvas = document.createElement('canvas');
+        canvas.width = dimensions.width;
+        canvas.height = dimensions.height;
+
+        const context = canvas.getContext('2d');
+        if (!context) {
+          reject(new Error('The browser could not create a canvas context.'));
+          return;
+        }
+
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = 'high';
+
+        if (item.targetFormat === 'image/jpeg') {
+          context.fillStyle = jpegBackground;
+          context.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        context.drawImage(img, 0, 0, dimensions.width, dimensions.height);
+
+        canvas.toBlob(
+          blob => {
+            if (!blob) {
+              reject(new Error('This browser could not export that format.'));
+              return;
+            }
+
+            resolve({
+              blob,
+              dimensions,
+              outputName: buildOutputName(item.originalFile, item.targetFormat),
+              outputUrl: URL.createObjectURL(blob),
+              outputSize: blob.size,
+            });
+          },
+          item.targetFormat,
+          item.targetFormat === 'image/png' ? undefined : quality,
+        );
       };
-      reader.onerror = () => reject(new Error("FileReader error"));
-      reader.readAsDataURL(item.originalFile);
+
+      img.onerror = () => {
+        reject(new Error('The image could not be decoded. Try a JPG, PNG, WEBP, SVG, BMP, GIF, or AVIF file.'));
+      };
+
+      img.src = item.previewUrl;
     });
   };
 
   const handleConvertAll = async () => {
-    const idleItems = queue.filter(q => q.status === 'idle' || q.status === 'error');
-    if (idleItems.length === 0) return;
+    const itemsToConvert = queue.filter(item => item.status === 'idle' || item.status === 'error');
+    if (itemsToConvert.length === 0) return;
 
-    // Start converting everything locally
-    for (const item of idleItems) {
-      setQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'converting' } : q));
+    for (const item of itemsToConvert) {
+      setQueue(prev =>
+        prev.map(queueItem =>
+          queueItem.id === item.id
+            ? {...queueItem, status: 'converting', errorMessage: undefined}
+            : queueItem,
+        ),
+      );
+
       try {
-        await convertFile(item);
-      } catch (err) {
-        setQueue(prev => prev.map(q => 
-          q.id === item.id ? { ...q, status: 'error', errorMessage: String(err) } : q
-        ));
+        const result = await convertFile(item);
+        setQueue(prev =>
+          prev.map(queueItem => {
+            if (queueItem.id !== item.id) return queueItem;
+            if (queueItem.outputUrl) URL.revokeObjectURL(queueItem.outputUrl);
+
+            return {
+              ...queueItem,
+              status: 'success',
+              outputBlob: result.blob,
+              outputUrl: result.outputUrl,
+              outputName: result.outputName,
+              outputSize: result.outputSize,
+              outputDimensions: result.dimensions,
+            };
+          }),
+        );
+      } catch (error) {
+        setQueue(prev =>
+          prev.map(queueItem =>
+            queueItem.id === item.id
+              ? {
+                  ...queueItem,
+                  status: 'error',
+                  errorMessage: getErrorMessage(error),
+                }
+              : queueItem,
+          ),
+        );
       }
     }
   };
 
   const handleDownloadAllZip = async () => {
-    const successItems = queue.filter(q => q.status === 'success' && q.outputBlob && q.outputName);
+    const successItems = queue.filter(
+      item => item.status === 'success' && item.outputBlob && item.outputName,
+    );
+
     if (successItems.length === 0) return;
 
     const zip = new JSZip();
@@ -221,353 +496,500 @@ export default function App() {
       }
     });
 
-    const content = await zip.generateAsync({ type: 'blob' });
+    const content = await zip.generateAsync({type: 'blob', compression: 'DEFLATE'});
     const url = URL.createObjectURL(content);
-    
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `converted_images_${Date.now()}.zip`;
-    a.click();
-    
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `converted-images-${Date.now()}.zip`;
+    link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const handleGlobalFormatChange = (newFormat: TargetFormat) => {
-    setGlobalFormat(newFormat);
-    setQueue(prev => prev.map(item => 
-      item.status === 'idle' || item.status === 'error' 
-        ? { ...item, targetFormat: newFormat } 
-        : item
-    ));
-  };
+  const stats = useMemo(() => {
+    const totalOriginal = queue.reduce((sum, item) => sum + item.originalFile.size, 0);
+    const convertedOriginal = queue.reduce(
+      (sum, item) => (item.status === 'success' ? sum + item.originalFile.size : sum),
+      0,
+    );
+    const totalOutput = queue.reduce((sum, item) => sum + (item.outputSize ?? 0), 0);
+    const success = queue.filter(item => item.status === 'success').length;
+    const converting = queue.filter(item => item.status === 'converting').length;
+    const error = queue.filter(item => item.status === 'error').length;
+    const pending = queue.filter(item => item.status === 'idle').length;
+    const savedBytes = convertedOriginal - totalOutput;
+    const savedPercent = convertedOriginal ? Math.round((savedBytes / convertedOriginal) * 100) : 0;
 
-  const formatFileSize = (bytes: number) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+    return {
+      totalOriginal,
+      totalOutput,
+      success,
+      converting,
+      error,
+      pending,
+      savedBytes,
+      savedPercent,
+      completion: queue.length ? Math.round(((success + error) / queue.length) * 100) : 0,
+    };
+  }, [queue]);
 
-  const canConvert = queue.some(q => q.status === 'idle' || q.status === 'error');
-  const canDownloadAll = queue.some(q => q.status === 'success');
+  const canConvert = queue.some(item => item.status === 'idle' || item.status === 'error');
+  const canDownloadAll = queue.some(item => item.status === 'success');
+  const isWorking = queue.some(item => item.status === 'converting');
+  const acceptValue = `${SUPPORTED_TYPES.join(',')},.jpg,.jpeg,.png,.webp,.bmp,.gif,.svg,.avif`;
 
   return (
-    <>
-      <div className="bg-blobs">
-        <div className="blob blob-1"></div>
-        <div className="blob blob-2"></div>
-        <div className="blob blob-3"></div>
-      </div>
-      
-      <div className="relative z-10 min-h-screen pb-20 pt-16 px-4 sm:px-6 lg:px-8 max-w-4xl mx-auto flex flex-col gap-10">
-        
-        {/* Header */}
-        <header className="flex flex-col items-center text-center gap-4">
-          <div className="inline-flex items-center justify-center p-3 glass-panel rounded-full mb-2 shadow-[0_0_40px_rgba(167,139,250,0.3)]">
-            <Layers className="w-8 h-8 text-fuchsia-400" />
+    <div className="app-shell min-h-screen text-slate-950">
+      <header className="app-header">
+        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
+          <div className="flex items-center gap-3">
+            <div className="brand-mark">
+              <Layers className="h-5 w-5" />
+            </div>
+            <div>
+              <h1 className="font-display text-2xl font-bold">LocalConvert</h1>
+              <p className="text-sm text-slate-500">Private browser image conversion workspace</p>
+            </div>
           </div>
-          <h1 className="text-5xl sm:text-6xl font-bold tracking-tight" style={{ fontFamily: 'var(--font-display)' }}>
-             <span className="text-white">Local</span>
-             <span className="text-gradient">Convert</span>
-          </h1>
-          <p className="text-gray-400 max-w-lg mt-2 text-lg">
-            Instantly convert your images. 100% free, private, and secure. Everything happens on your device.
-          </p>
-        </header>
 
-        {/* Main Content */}
-        <main className="flex flex-col gap-6">
-          
-          <div className="glass-panel p-2 sm:p-4 rounded-3xl flex flex-col gap-4">
-            
-            {/* Dropzone */}
-            <div
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              onClick={() => fileInputRef.current?.click()}
-              className={`
-                border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-300
-                flex flex-col items-center justify-center gap-6 min-h-[280px] relative overflow-hidden
-                ${isDragging 
-                  ? 'border-indigo-500 bg-indigo-500/10' 
-                  : 'border-white/20 bg-black/20 hover:bg-white/5 hover:border-white/30'}
-              `}
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="status-pill">
+              <BadgeCheck className="h-4 w-4 text-teal-600" />
+              No uploads
+            </span>
+            <span className="status-pill">
+              <Sparkles className="h-4 w-4 text-amber-600" />
+              {queue.length} queued
+            </span>
+            <span className="status-pill">
+              <Gauge className="h-4 w-4 text-blue-600" />
+              {stats.completion}% done
+            </span>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto grid max-w-7xl gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[360px_minmax(0,1fr)] lg:px-8">
+        <aside className="flex flex-col gap-4">
+          <section
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className={`upload-zone ${isDragging ? 'upload-zone-active' : ''}`}
+          >
+            <input
+              type="file"
+              multiple
+              accept={acceptValue}
+              className="hidden"
+              ref={fileInputRef}
+              onChange={handleFileInput}
+            />
+
+            <motion.div
+              animate={{scale: isDragging ? 1.05 : 1, y: isDragging ? -4 : 0}}
+              className="upload-icon"
             >
-              <input
-                type="file"
-                multiple
-                accept="image/*"
-                className="hidden"
-                ref={fileInputRef}
-                onChange={handleFileInput}
-              />
-              <motion.div 
-                animate={{ y: isDragging ? -10 : 0, scale: isDragging ? 1.05 : 1 }} 
-                className="p-5 rounded-full bg-white/10 text-indigo-300 backdrop-blur-sm"
-              >
-                <UploadCloud size={48} strokeWidth={1.5} />
-              </motion.div>
-              <div className="flex flex-col gap-2 relative z-10">
-                <h3 className="text-2xl font-medium text-white" style={{ fontFamily: 'var(--font-display)' }}>
-                  Drag & drop your images
-                </h3>
-                <p className="text-gray-400">or click to browse local files</p>
-              </div>
+              <UploadCloud className="h-10 w-10" strokeWidth={1.7} />
+            </motion.div>
+
+            <div className="space-y-2 text-center">
+              <h2 className="font-display text-2xl font-semibold">Drop images here</h2>
+              <p className="text-sm text-slate-500">Click to browse, drag a batch, or paste images from clipboard.</p>
             </div>
 
-            {/* Config & Toggles */}
-            <div className="flex flex-col lg:flex-row gap-4">
-              {/* Quick Format Selector */}
-              <div className="flex-1 flex flex-col sm:flex-row items-center justify-between gap-4 bg-black/30 rounded-xl p-4 border border-white/5">
-                <span className="text-sm text-gray-400 font-medium whitespace-nowrap">Target Format:</span>
-                <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-                  {FORMAT_OPTIONS.map(opt => (
-                    <button 
-                      key={opt.value}
-                      onClick={() => handleGlobalFormatChange(opt.value)}
-                      className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 border ${
-                        globalFormat === opt.value
-                        ? 'bg-indigo-500 text-white border-indigo-400 shadow-[0_0_15px_rgba(99,102,241,0.5)]'
-                        : 'bg-white/5 text-gray-300 border-white/10 hover:bg-white/10'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+            <div className="flex flex-wrap justify-center gap-2 text-xs font-semibold uppercase text-slate-500">
+              <span className="format-chip">JPG</span>
+              <span className="format-chip">PNG</span>
+              <span className="format-chip">WEBP</span>
+              <span className="format-chip">SVG</span>
+              <span className="format-chip">AVIF</span>
+            </div>
+          </section>
 
-              {/* Advanced Settings Toggle */}
-              <button 
-                onClick={() => setShowSettings(!showSettings)}
-                className={`flex items-center justify-center gap-2 px-6 py-4 rounded-xl text-sm font-medium transition-all duration-200 border lg:w-48
-                  ${showSettings ? 'border-fuchsia-500/50 bg-fuchsia-500/10 text-fuchsia-300' : 'border-white/5 bg-black/30 text-gray-400 hover:bg-white/10 hover:text-white'}
-                `}
+          <section className="panel p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Settings2 className="h-5 w-5 text-slate-500" />
+                <h2 className="font-display text-lg font-semibold">Conversion setup</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSettings(value => !value)}
+                className="icon-button"
+                title={showSettings ? 'Hide settings' : 'Show settings'}
               >
-                <Settings2 size={18} />
-                <span>Advanced</span>
+                <SlidersHorizontal className="h-4 w-4" />
               </button>
             </div>
 
-            {/* Advanced Settings Panel */}
-            <AnimatePresence>
-              {showSettings && (
-                <motion.div 
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="overflow-hidden"
-                >
-                  <div className="p-5 border border-white/10 rounded-2xl bg-white/5 grid grid-cols-1 md:grid-cols-2 gap-8 mt-2">
-                    
-                    {/* Quality */}
-                    <div className="flex flex-col gap-4">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-gray-300">
-                          <SlidersHorizontal size={16} />
-                          <span className="font-medium text-sm">Image Quality</span>
-                        </div>
-                        <span className="text-xs font-bold px-2 py-1 bg-white/10 rounded-md text-gray-300">
-                          {Math.round(quality * 100)}%
-                        </span>
-                      </div>
-                      <input 
-                        type="range" 
-                        min="0.1" 
-                        max="1" 
-                        step="0.05" 
-                        value={quality}
-                        onChange={(e) => setQuality(parseFloat(e.target.value))}
-                        className="w-full"
-                      />
-                      <p className="text-xs text-gray-500">Applies to JPG and WEBP compression.</p>
-                    </div>
-
-                    {/* Resize */}
-                    <div className="flex flex-col gap-4">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-gray-300">
-                          <PackageOpen size={16} />
-                          <span className="font-medium text-sm">Resize Image</span>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input type="checkbox" className="sr-only peer" checked={resizeEnabled} onChange={(e) => setResizeEnabled(e.target.checked)} />
-                          <div className="w-11 h-6 bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-fuchsia-500"></div>
-                        </label>
-                      </div>
-                      <div className={`transition-opacity duration-200 ${resizeEnabled ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
-                        <div className="flex items-center gap-3">
-                          <span className="text-sm text-gray-400">Max Width:</span>
-                          <div className="relative flex-1">
-                            <input 
-                              type="number" 
-                              value={maxWidth}
-                              onChange={(e) => setMaxWidth(Math.max(10, parseInt(e.target.value) || 0))}
-                              className="w-full bg-black/50 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-mono"
-                            />
-                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500 font-mono">px</span>
-                          </div>
-                        </div>
-                      </div>
-                      <p className="text-xs text-gray-500">Proportionally scales down images wider than max width.</p>
-                    </div>
-
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-            
-          </div>
-
-          {/* Queue List */}
-          {queue.length > 0 && (
-            <div className="glass-panel rounded-3xl overflow-hidden flex flex-col mt-4">
-              
-              {/* Toolbar */}
-              <div className="flex flex-wrap items-center justify-between p-5 border-b border-white/10 bg-black/40 gap-4">
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-medium text-gray-400">
-                    {queue.length} file{queue.length !== 1 ? 's' : ''} in queue
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-4 ml-auto">
-                  {canDownloadAll && !canConvert && (
+            <div className="space-y-4">
+              <div>
+                <label className="control-label">Target format</label>
+                <div className="segmented-control">
+                  {FORMAT_OPTIONS.map(option => (
                     <button
-                      onClick={handleDownloadAllZip}
-                      className="px-4 py-2 text-sm font-bold text-emerald-400 bg-emerald-400/10 hover:bg-emerald-400/20 rounded-xl transition-all border border-emerald-400/20 shadow-sm flex items-center gap-2"
+                      key={option.value}
+                      type="button"
+                      onClick={() => handleGlobalFormatChange(option.value)}
+                      className={globalFormat === option.value ? 'is-selected' : ''}
+                      title={option.detail}
                     >
-                      <Download size={16} />
-                      <span className="hidden sm:inline">Download ZIP</span>
+                      {option.label}
                     </button>
-                  )}
-                  <button
-                    onClick={clearAll}
-                    className="px-4 py-2 text-sm font-medium text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-colors"
-                  >
-                    Clear All
-                  </button>
-                  <button
-                    onClick={handleConvertAll}
-                    disabled={!canConvert}
-                    className={`
-                      px-6 py-2.5 text-sm font-bold text-white rounded-xl transition-all shadow-lg
-                      ${canConvert 
-                        ? 'bg-gradient-to-r from-indigo-500 to-fuchsia-500 hover:from-indigo-400 hover:to-fuchsia-400 hover:scale-[1.02]' 
-                        : 'bg-white/10 text-white/40 cursor-not-allowed shadow-none'}
-                    `}
-                  >
-                    Convert Files
-                  </button>
+                  ))}
                 </div>
               </div>
 
+              <AnimatePresence initial={false}>
+                {showSettings && (
+                  <motion.div
+                    initial={{height: 0, opacity: 0}}
+                    animate={{height: 'auto', opacity: 1}}
+                    exit={{height: 0, opacity: 0}}
+                    className="overflow-hidden"
+                  >
+                    <div className="space-y-5 pt-1">
+                      <div>
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <label className="control-label mb-0 flex items-center gap-2">
+                            <SlidersHorizontal className="h-4 w-4" />
+                            Quality
+                          </label>
+                          <span className="value-badge">{Math.round(quality * 100)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.1"
+                          max="1"
+                          step="0.05"
+                          value={quality}
+                          onChange={event => setQuality(parseFloat(event.target.value))}
+                          className="w-full"
+                        />
+                        <p className="mt-2 text-xs text-slate-500">Applies to JPG and WEBP output.</p>
+                      </div>
 
-              {/* List */}
-              <ul className="divide-y divide-white/5 max-h-[500px] overflow-y-auto p-2">
+                      <div>
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <label className="control-label mb-0 flex items-center gap-2">
+                            <Maximize2 className="h-4 w-4" />
+                            Resize bounds
+                          </label>
+                          <label className="switch">
+                            <input
+                              type="checkbox"
+                              checked={resizeEnabled}
+                              onChange={event => setResizeEnabled(event.target.checked)}
+                            />
+                            <span></span>
+                          </label>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="mini-label">Max width</label>
+                            <input
+                              type="number"
+                              min="10"
+                              value={maxWidth}
+                              disabled={!resizeEnabled}
+                              onChange={event => setMaxWidth(Math.max(10, Number(event.target.value) || 10))}
+                              className="input-field"
+                            />
+                          </div>
+                          <div>
+                            <label className="mini-label">Max height</label>
+                            <input
+                              type="number"
+                              min="10"
+                              value={maxHeight}
+                              disabled={!resizeEnabled}
+                              onChange={event => setMaxHeight(Math.max(10, Number(event.target.value) || 10))}
+                              className="input-field"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-4 gap-2">
+                          {RESIZE_PRESETS.map(preset => (
+                            <button
+                              key={preset.label}
+                              type="button"
+                              onClick={() => applyResizePreset(preset)}
+                              className="preset-button"
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-[76px_minmax(0,1fr)] gap-3">
+                        <div>
+                          <label className="mini-label">JPG fill</label>
+                          <input
+                            type="color"
+                            value={jpegBackground}
+                            onChange={event => setJpegBackground(event.target.value)}
+                            className="color-input"
+                            title="JPEG background for transparent images"
+                          />
+                        </div>
+                        <div>
+                          <label className="mini-label">Filename prefix</label>
+                          <input
+                            type="text"
+                            value={filenamePrefix}
+                            onChange={event => setFilenamePrefix(event.target.value)}
+                            placeholder="converted"
+                            className="input-field"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </section>
+
+          <section className="panel p-4">
+            <div className="mb-4 flex items-center gap-2">
+              <PackageOpen className="h-5 w-5 text-slate-500" />
+              <h2 className="font-display text-lg font-semibold">Batch actions</h2>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={handleConvertAll}
+                disabled={!canConvert || isWorking}
+                className="primary-button col-span-2"
+              >
+                <ImagePlus className="h-4 w-4" />
+                {isWorking ? 'Converting...' : 'Convert ready files'}
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadAllZip}
+                disabled={!canDownloadAll}
+                className="secondary-button"
+              >
+                <FileArchive className="h-4 w-4" />
+                ZIP
+              </button>
+              <button
+                type="button"
+                onClick={clearCompleted}
+                disabled={!canDownloadAll}
+                className="secondary-button"
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                Clear done
+              </button>
+              <button
+                type="button"
+                onClick={clearAll}
+                disabled={queue.length === 0}
+                className="danger-button col-span-2"
+              >
+                <Trash2 className="h-4 w-4" />
+                Clear queue
+              </button>
+            </div>
+          </section>
+        </aside>
+
+        <section className="flex min-w-0 flex-col gap-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="metric-card">
+              <span>Original size</span>
+              <strong>{formatFileSize(stats.totalOriginal)}</strong>
+            </div>
+            <div className="metric-card">
+              <span>Converted size</span>
+              <strong>{formatFileSize(stats.totalOutput)}</strong>
+            </div>
+            <div className="metric-card">
+              <span>Storage change</span>
+              <strong className={stats.savedBytes >= 0 ? 'text-teal-700' : 'text-amber-700'}>
+                {stats.savedBytes >= 0 ? '-' : '+'}
+                {formatFileSize(Math.abs(stats.savedBytes))}
+              </strong>
+              <p>
+                {stats.totalOutput
+                  ? `${Math.abs(stats.savedPercent)}% ${stats.savedBytes >= 0 ? 'smaller' : 'larger'}`
+                  : 'Waiting for output'}
+              </p>
+            </div>
+            <div className="metric-card">
+              <span>Completed</span>
+              <strong>{stats.success}/{queue.length || 0}</strong>
+            </div>
+          </div>
+
+          <section className="panel min-h-[560px] p-4">
+            <div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="font-display text-xl font-semibold">Conversion queue</h2>
+                <p className="text-sm text-slate-500">
+                  {stats.pending} ready, {stats.converting} running, {stats.success} done, {stats.error} errors
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="progress-track w-32 sm:w-44">
+                  <div className="progress-fill" style={{width: `${stats.completion}%`}}></div>
+                </div>
+                <span className="value-badge">{stats.completion}%</span>
+              </div>
+            </div>
+
+            {queue.length === 0 ? (
+              <div className="empty-state">
+                <div className="empty-icon">
+                  <ClipboardPaste className="h-8 w-8" />
+                </div>
+                <h3 className="font-display text-2xl font-semibold">Your batch is ready when you are</h3>
+                <p className="max-w-md text-center text-sm text-slate-500">
+                  Add images from your device or paste from the clipboard. Each file keeps its own target format,
+                  status, preview, and output size.
+                </p>
+              </div>
+            ) : (
+              <ul className="queue-list">
                 <AnimatePresence>
-                  {queue.map((item) => (
-                    <motion.li
-                      key={item.id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.95 }}
-                      transition={{ duration: 0.2 }}
-                      className="glass-item rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between p-4 gap-4 mb-2 last:mb-0"
-                    >
-                      
-                      {/* File Info */}
-                      <div className="flex items-center gap-4 flex-1 min-w-0">
-                        <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
-                          <ImageIcon className="w-6 h-6 text-indigo-300" />
+                  {queue.map(item => {
+                    const outputDelta =
+                      item.outputSize && item.originalFile.size
+                        ? Math.round(((item.originalFile.size - item.outputSize) / item.originalFile.size) * 100)
+                        : null;
+
+                    return (
+                      <motion.li
+                        key={item.id}
+                        initial={{opacity: 0, y: 8}}
+                        animate={{opacity: 1, y: 0}}
+                        exit={{opacity: 0, scale: 0.98}}
+                        transition={{duration: 0.18}}
+                        className="queue-item"
+                      >
+                        <div className="thumb-frame">
+                          <img src={item.previewUrl} alt="" />
                         </div>
-                        <div className="flex flex-col min-w-0 flex-1">
-                          <p className="text-sm font-medium text-white truncate" title={item.originalFile.name}>
-                            {item.originalFile.name}
-                          </p>
-                          <p className="text-xs text-gray-400">
-                            {formatFileSize(item.originalFile.size)} • {getFormatExt(item.originalFile.type).toUpperCase()}
-                          </p>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="mb-1 flex flex-wrap items-center gap-2">
+                            <p className="truncate font-semibold text-slate-950" title={item.originalFile.name}>
+                              {item.originalFile.name}
+                            </p>
+                            <span className={`queue-status status-${item.status}`}>
+                              {item.status === 'idle' && 'Ready'}
+                              {item.status === 'converting' && 'Converting'}
+                              {item.status === 'success' && 'Done'}
+                              {item.status === 'error' && 'Error'}
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-sm text-slate-500">
+                            <span>{formatFileSize(item.originalFile.size)}</span>
+                            <span>{getSourceLabel(item.originalFile)}</span>
+                            <span>{formatDimensions(item.originalDimensions)}</span>
+                          </div>
+
+                          {item.status === 'success' && item.outputSize && (
+                            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm">
+                              <span className="text-slate-600">
+                                Output {formatFileSize(item.outputSize)}
+                              </span>
+                              <span className="text-slate-600">{formatDimensions(item.outputDimensions)}</span>
+                              {outputDelta !== null && (
+                                <span className={outputDelta >= 0 ? 'text-teal-700' : 'text-amber-700'}>
+                                  {outputDelta >= 0 ? `${outputDelta}% smaller` : `${Math.abs(outputDelta)}% larger`}
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {item.status === 'error' && item.errorMessage && (
+                            <p className="mt-2 text-sm text-red-600">{item.errorMessage}</p>
+                          )}
                         </div>
-                      </div>
 
-                      {/* Format Target */}
-                      <div className="flex items-center gap-3 shrink-0 sm:w-40 justify-center">
-                        <ArrowRight className="w-4 h-4 text-gray-500 hidden sm:block" />
-                        {item.status === 'success' ? (
-                          <span className="text-xs font-bold px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                            {getFormatExt(item.targetFormat).toUpperCase()}
-                          </span>
-                        ) : (
-                          <select
-                            value={item.targetFormat}
-                            onChange={(e) => updateItemFormat(item.id, e.target.value as TargetFormat)}
-                            disabled={item.status === 'converting'}
-                            className="block w-full rounded-lg border-white/10 py-1.5 pl-3 pr-8 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-black/50 text-white disabled:opacity-50 appearance-none cursor-pointer"
-                            style={{ backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%239CA3AF%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.5rem top 50%', backgroundSize: '0.65rem auto' }}
-                          >
-                            <option value="image/jpeg">JPG</option>
-                            <option value="image/png">PNG</option>
-                            <option value="image/webp">WEBP</option>
-                          </select>
-                        )}
-                      </div>
-
-                      {/* Status & Actions */}
-                      <div className="flex items-center gap-3 shrink-0 justify-end sm:w-48">
-                        {item.status === 'converting' && (
-                          <div className="text-sm text-indigo-400 flex items-center gap-2">
-                            <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-indigo-400" fill="none" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            <span className="font-medium text-xs">Converting...</span>
+                        <div className="flex w-full flex-col gap-3 sm:w-auto sm:min-w-[220px] sm:flex-row sm:items-center sm:justify-end">
+                          <div className="flex items-center gap-2">
+                            <ArrowRight className="hidden h-4 w-4 text-slate-400 sm:block" />
+                            <select
+                              value={item.targetFormat}
+                              onChange={event => updateItemFormat(item.id, event.target.value as TargetFormat)}
+                              disabled={item.status === 'converting'}
+                              className="select-field"
+                              title="Output format"
+                            >
+                              <option value="image/jpeg">JPG</option>
+                              <option value="image/png">PNG</option>
+                              <option value="image/webp">WEBP</option>
+                            </select>
                           </div>
-                        )}
-                        
-                        {item.status === 'success' && item.outputUrl && (
-                          <a
-                            href={item.outputUrl}
-                            download={item.outputName}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-green-300 bg-green-500/10 hover:bg-green-500/20 rounded-xl transition-colors border border-green-500/20 shadow-sm"
-                          >
-                            <Download className="w-4 h-4" />
-                            <span>Save</span>
-                          </a>
-                        )}
 
-                        {item.status === 'error' && (
-                          <div className="flex items-center gap-1.5 text-red-400 text-sm" title={item.errorMessage}>
-                            <AlertCircle className="w-4 h-4" />
-                            <span className="hidden sm:inline text-xs font-semibold">Error</span>
+                          <div className="flex items-center justify-end gap-2">
+                            {item.status === 'converting' && (
+                              <span className="spinner" aria-label="Converting"></span>
+                            )}
+
+                            {item.status === 'success' && item.outputUrl && (
+                              <a
+                                href={item.outputUrl}
+                                download={item.outputName}
+                                className="icon-button success"
+                                title="Download converted image"
+                              >
+                                <Download className="h-4 w-4" />
+                              </a>
+                            )}
+
+                            {(item.status === 'success' || item.status === 'error') && (
+                              <button
+                                type="button"
+                                onClick={() => resetItem(item.id)}
+                                className="icon-button"
+                                title="Reset this file"
+                              >
+                                <RefreshCw className="h-4 w-4" />
+                              </button>
+                            )}
+
+                            {item.status === 'error' && (
+                              <AlertCircle className="h-5 w-5 text-red-500" aria-hidden="true" />
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => removeItem(item.id)}
+                              className="icon-button danger"
+                              title="Remove file"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
                           </div>
-                        )}
-
-                        <button
-                          onClick={() => removeItem(item.id)}
-                          className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-colors"
-                          title="Remove file"
-                        >
-                          <X className="w-5 h-5" />
-                        </button>
-                      </div>
-
-                    </motion.li>
-                  ))}
+                        </div>
+                      </motion.li>
+                    );
+                  })}
                 </AnimatePresence>
               </ul>
-            </div>
-          )}
-        </main>
+            )}
+          </section>
+        </section>
+      </main>
 
-        <footer className="mt-auto text-center text-sm text-gray-500 font-medium pb-8 border-t border-white/5 pt-8">
-          <p>Operates strictly in your browser. Absolutely no files are uploaded.</p>
-        </footer>
-      </div>
-    </>
+      <footer className="mx-auto max-w-7xl px-4 pb-8 text-sm text-slate-500 sm:px-6 lg:px-8">
+        <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-5">
+          <ImageIcon className="h-4 w-4" />
+          <span>All conversion work stays inside the browser tab.</span>
+        </div>
+      </footer>
+    </div>
   );
 }
