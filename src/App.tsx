@@ -5,27 +5,39 @@ import {
   BadgeCheck,
   CheckCircle2,
   ClipboardPaste,
+  Crop,
   Download,
   FileArchive,
+  FlipHorizontal,
+  FlipVertical,
   Gauge,
   ImageIcon,
   ImagePlus,
   Layers,
   Maximize2,
+  Moon,
   PackageOpen,
+  Palette,
   RefreshCw,
+  RotateCw,
   Settings2,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Sun,
   Trash2,
   UploadCloud,
   X,
+  Zap,
 } from 'lucide-react';
 import {AnimatePresence, motion} from 'motion/react';
 import JSZip from 'jszip';
 
 type TargetFormat = 'image/jpeg' | 'image/png' | 'image/webp';
 type QueueStatus = 'idle' | 'converting' | 'success' | 'error';
+type ResizeMode = 'fit' | 'exact';
+type ThemeMode = 'aurora' | 'midnight';
+type FilterMode = 'none' | 'vivid' | 'mono' | 'warm' | 'cool' | 'soft';
 
 interface ImageDimensions {
   width: number;
@@ -52,6 +64,7 @@ interface ResizePreset {
   width: number;
   height: number;
   enabled: boolean;
+  mode: ResizeMode;
 }
 
 const SUPPORTED_TYPES = [
@@ -67,16 +80,33 @@ const SUPPORTED_TYPES = [
 const SUPPORTED_EXTENSIONS = /\.(jpe?g|png|webp|bmp|gif|svg|avif)$/i;
 
 const FORMAT_OPTIONS: {label: string; value: TargetFormat; detail: string}[] = [
-  {label: 'JPG', value: 'image/jpeg', detail: 'Small, shareable photos'},
-  {label: 'PNG', value: 'image/png', detail: 'Sharp with transparency'},
-  {label: 'WEBP', value: 'image/webp', detail: 'Modern web delivery'},
+  {label: 'JPG', value: 'image/jpeg', detail: 'Small, compatible photos'},
+  {label: 'PNG', value: 'image/png', detail: 'Crisp output with transparency'},
+  {label: 'WEBP', value: 'image/webp', detail: 'Modern, lightweight web images'},
 ];
 
 const RESIZE_PRESETS: ResizePreset[] = [
-  {label: 'Original', width: 1920, height: 1080, enabled: false},
-  {label: '4K', width: 3840, height: 2160, enabled: true},
-  {label: 'HD', width: 1920, height: 1080, enabled: true},
-  {label: 'Social', width: 1080, height: 1080, enabled: true},
+  {label: 'Original', width: 1920, height: 1080, enabled: false, mode: 'fit'},
+  {label: '4K', width: 3840, height: 2160, enabled: true, mode: 'fit'},
+  {label: 'HD', width: 1920, height: 1080, enabled: true, mode: 'fit'},
+  {label: 'Square', width: 1080, height: 1080, enabled: true, mode: 'exact'},
+  {label: 'Story', width: 1080, height: 1920, enabled: true, mode: 'exact'},
+  {label: 'Avatar', width: 512, height: 512, enabled: true, mode: 'exact'},
+];
+
+const FILTER_OPTIONS: {label: string; value: FilterMode; css: string; detail: string}[] = [
+  {label: 'Clean', value: 'none', css: 'none', detail: 'No filter'},
+  {label: 'Vivid', value: 'vivid', css: 'contrast(1.08) saturate(1.25)', detail: 'Punchier color'},
+  {label: 'Mono', value: 'mono', css: 'grayscale(1) contrast(1.08)', detail: 'Black and white'},
+  {label: 'Warm', value: 'warm', css: 'sepia(0.18) saturate(1.12) brightness(1.03)', detail: 'Soft warm tone'},
+  {label: 'Cool', value: 'cool', css: 'saturate(1.08) hue-rotate(12deg) brightness(1.02)', detail: 'Cooler tone'},
+  {label: 'Soft', value: 'soft', css: 'contrast(0.94) saturate(0.92) brightness(1.04)', detail: 'Gentle editorial finish'},
+];
+
+const QUALITY_PRESETS = [
+  {label: 'Tiny', value: 0.55},
+  {label: 'Balanced', value: 0.82},
+  {label: 'Premium', value: 0.94},
 ];
 
 function getFormatExt(mime: string) {
@@ -113,8 +143,8 @@ function getBaseName(fileName: string) {
   return extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName;
 }
 
-function cleanPrefix(prefix: string) {
-  return prefix
+function cleanNamePart(value: string) {
+  return value
     .trim()
     .replace(/[^\w.-]+/g, '-')
     .replace(/-+/g, '-')
@@ -165,17 +195,31 @@ function revokeItemUrls(item: FileQueueItem, outputOnly = false) {
   }
 }
 
+function getFilterCss(filter: FilterMode) {
+  return FILTER_OPTIONS.find(option => option.value === filter)?.css ?? 'none';
+}
+
 export default function App() {
   const [queue, setQueue] = useState<FileQueueItem[]>([]);
   const [globalFormat, setGlobalFormat] = useState<TargetFormat>('image/webp');
   const [isDragging, setIsDragging] = useState(false);
   const [showSettings, setShowSettings] = useState(true);
-  const [quality, setQuality] = useState(0.86);
+  const [quality, setQuality] = useState(0.88);
   const [resizeEnabled, setResizeEnabled] = useState(false);
+  const [resizeMode, setResizeMode] = useState<ResizeMode>('fit');
   const [maxWidth, setMaxWidth] = useState(1920);
   const [maxHeight, setMaxHeight] = useState(1080);
   const [jpegBackground, setJpegBackground] = useState('#ffffff');
   const [filenamePrefix, setFilenamePrefix] = useState('');
+  const [filenameSuffix, setFilenameSuffix] = useState('converted');
+  const [filterMode, setFilterMode] = useState<FilterMode>('none');
+  const [rotation, setRotation] = useState(0);
+  const [flipHorizontal, setFlipHorizontal] = useState(false);
+  const [flipVertical, setFlipVertical] = useState(false);
+  const [includeOriginalInZip, setIncludeOriginalInZip] = useState(false);
+  const [autoConvertOnDrop, setAutoConvertOnDrop] = useState(false);
+  const [replaceCompleted, setReplaceCompleted] = useState(false);
+  const [theme, setTheme] = useState<ThemeMode>('aurora');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queueRef = useRef<FileQueueItem[]>([]);
@@ -213,7 +257,7 @@ export default function App() {
   const addFilesToQueue = useCallback(
     (files: FileList | File[]) => {
       const validFiles = Array.from(files).filter(isSupportedImage);
-      if (validFiles.length === 0) return;
+      if (validFiles.length === 0) return [];
 
       const newItems: FileQueueItem[] = validFiles.map(file => ({
         id: createId(),
@@ -225,6 +269,7 @@ export default function App() {
 
       setQueue(prev => [...prev, ...newItems]);
       newItems.forEach(readDimensions);
+      return newItems;
     },
     [globalFormat, readDimensions],
   );
@@ -233,45 +278,16 @@ export default function App() {
     const handlePaste = (event: ClipboardEvent) => {
       const files = Array.from(event.clipboardData?.files ?? []);
       if (files.some(isSupportedImage)) {
-        addFilesToQueue(files);
+        const newItems = addFilesToQueue(files);
+        if (autoConvertOnDrop && newItems.length > 0) {
+          setTimeout(() => handleConvertAll(newItems), 80);
+        }
       }
     };
 
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [addFilesToQueue]);
-
-  const handleDragOver = useCallback((event: React.DragEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setIsDragging(true);
-  }, []);
-
-  const handleDragLeave = useCallback((event: React.DragEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setIsDragging(false);
-  }, []);
-
-  const handleDrop = useCallback(
-    (event: React.DragEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      setIsDragging(false);
-
-      if (event.dataTransfer.files.length > 0) {
-        addFilesToQueue(event.dataTransfer.files);
-      }
-    },
-    [addFilesToQueue],
-  );
-
-  const handleFileInput = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files && event.target.files.length > 0) {
-      addFilesToQueue(event.target.files);
-      event.target.value = '';
-    }
-  };
+  });
 
   const resetItemOutput = (item: FileQueueItem): FileQueueItem => {
     if (item.outputUrl) URL.revokeObjectURL(item.outputUrl);
@@ -286,6 +302,10 @@ export default function App() {
       outputSize: undefined,
       outputDimensions: undefined,
     };
+  };
+
+  const resetAllOutputs = () => {
+    setQueue(prev => prev.map(item => resetItemOutput(item)));
   };
 
   const updateItemFormat = (id: string, format: TargetFormat) => {
@@ -303,6 +323,24 @@ export default function App() {
 
   const resetItem = (id: string) => {
     setQueue(prev => prev.map(item => (item.id === id ? resetItemOutput(item) : item)));
+  };
+
+  const duplicateItem = (id: string) => {
+    setQueue(prev => {
+      const source = prev.find(item => item.id === id);
+      if (!source) return prev;
+
+      const duplicate: FileQueueItem = {
+        id: createId(),
+        originalFile: source.originalFile,
+        targetFormat: source.targetFormat,
+        status: 'idle',
+        previewUrl: URL.createObjectURL(source.originalFile),
+        originalDimensions: source.originalDimensions,
+      };
+
+      return [...prev, duplicate];
+    });
   };
 
   const removeItem = (id: string) => {
@@ -329,7 +367,7 @@ export default function App() {
     setGlobalFormat(newFormat);
     setQueue(prev =>
       prev.map(item =>
-        item.status === 'idle' || item.status === 'error'
+        item.status === 'idle' || item.status === 'error' || replaceCompleted
           ? {
               ...resetItemOutput(item),
               targetFormat: newFormat,
@@ -341,30 +379,111 @@ export default function App() {
 
   const applyResizePreset = (preset: ResizePreset) => {
     setResizeEnabled(preset.enabled);
+    setResizeMode(preset.mode);
     setMaxWidth(preset.width);
     setMaxHeight(preset.height);
   };
 
-  const getTargetDimensions = (width: number, height: number): ImageDimensions => {
+  const handleDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setIsDragging(false);
+
+      if (event.dataTransfer.files.length > 0) {
+        const newItems = addFilesToQueue(event.dataTransfer.files);
+        if (autoConvertOnDrop && newItems.length > 0) {
+          setTimeout(() => handleConvertAll(newItems), 80);
+        }
+      }
+    },
+    [addFilesToQueue, autoConvertOnDrop],
+  );
+
+  const handleFileInput = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files.length > 0) {
+      const newItems = addFilesToQueue(event.target.files);
+      if (autoConvertOnDrop && newItems.length > 0) {
+        setTimeout(() => handleConvertAll(newItems), 80);
+      }
+      event.target.value = '';
+    }
+  };
+
+  const getOutputDimensions = (width: number, height: number) => {
+    const normalizedRotation = ((rotation % 360) + 360) % 360;
+    const rotated = normalizedRotation === 90 || normalizedRotation === 270;
+    const baseWidth = rotated ? height : width;
+    const baseHeight = rotated ? width : height;
+
     if (!resizeEnabled) {
-      return {width, height};
+      return {width: baseWidth, height: baseHeight};
     }
 
     const widthLimit = Math.max(10, maxWidth);
     const heightLimit = Math.max(10, maxHeight);
-    const ratio = Math.min(widthLimit / width, heightLimit / height, 1);
 
+    if (resizeMode === 'exact') {
+      return {width: widthLimit, height: heightLimit};
+    }
+
+    const ratio = Math.min(widthLimit / baseWidth, heightLimit / baseHeight, 1);
     return {
-      width: Math.max(1, Math.round(width * ratio)),
-      height: Math.max(1, Math.round(height * ratio)),
+      width: Math.max(1, Math.round(baseWidth * ratio)),
+      height: Math.max(1, Math.round(baseHeight * ratio)),
     };
   };
 
   const buildOutputName = (file: File, targetFormat: TargetFormat) => {
-    const prefix = cleanPrefix(filenamePrefix);
+    const prefix = cleanNamePart(filenamePrefix);
+    const suffix = cleanNamePart(filenameSuffix);
     const baseName = getBaseName(file.name);
     const extension = getFormatExt(targetFormat);
-    return `${prefix ? `${prefix}-` : ''}${baseName}.${extension}`;
+    return `${prefix ? `${prefix}-` : ''}${baseName}${suffix ? `-${suffix}` : ''}.${extension}`;
+  };
+
+  const drawImageToCanvas = (
+    context: CanvasRenderingContext2D,
+    image: HTMLImageElement,
+    dimensions: ImageDimensions,
+    sourceWidth: number,
+    sourceHeight: number,
+  ) => {
+    const normalizedRotation = ((rotation % 360) + 360) % 360;
+    const rotated = normalizedRotation === 90 || normalizedRotation === 270;
+    const drawWidth = rotated ? dimensions.height : dimensions.width;
+    const drawHeight = rotated ? dimensions.width : dimensions.height;
+
+    context.save();
+    context.filter = getFilterCss(filterMode);
+    context.translate(dimensions.width / 2, dimensions.height / 2);
+    context.rotate((normalizedRotation * Math.PI) / 180);
+    context.scale(flipHorizontal ? -1 : 1, flipVertical ? -1 : 1);
+
+    if (resizeMode === 'exact' && resizeEnabled) {
+      const scale = Math.max(drawWidth / sourceWidth, drawHeight / sourceHeight);
+      const cropWidth = drawWidth / scale;
+      const cropHeight = drawHeight / scale;
+      const cropX = (sourceWidth - cropWidth) / 2;
+      const cropY = (sourceHeight - cropHeight) / 2;
+      context.drawImage(image, cropX, cropY, cropWidth, cropHeight, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+    } else {
+      context.drawImage(image, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+    }
+
+    context.restore();
   };
 
   const convertFile = async (item: FileQueueItem) => {
@@ -386,7 +505,7 @@ export default function App() {
           return;
         }
 
-        const dimensions = getTargetDimensions(sourceWidth, sourceHeight);
+        const dimensions = getOutputDimensions(sourceWidth, sourceHeight);
         const canvas = document.createElement('canvas');
         canvas.width = dimensions.width;
         canvas.height = dimensions.height;
@@ -403,9 +522,11 @@ export default function App() {
         if (item.targetFormat === 'image/jpeg') {
           context.fillStyle = jpegBackground;
           context.fillRect(0, 0, canvas.width, canvas.height);
+        } else {
+          context.clearRect(0, 0, canvas.width, canvas.height);
         }
 
-        context.drawImage(img, 0, 0, dimensions.width, dimensions.height);
+        drawImageToCanvas(context, img, dimensions, sourceWidth, sourceHeight);
 
         canvas.toBlob(
           blob => {
@@ -435,8 +556,11 @@ export default function App() {
     });
   };
 
-  const handleConvertAll = async () => {
-    const itemsToConvert = queue.filter(item => item.status === 'idle' || item.status === 'error');
+  async function handleConvertAll(specificItems?: FileQueueItem[]) {
+    const sourceItems = specificItems ?? queue;
+    const itemsToConvert = sourceItems.filter(
+      item => item.status === 'idle' || item.status === 'error' || replaceCompleted,
+    );
     if (itemsToConvert.length === 0) return;
 
     for (const item of itemsToConvert) {
@@ -449,7 +573,8 @@ export default function App() {
       );
 
       try {
-        const result = await convertFile(item);
+        const latestItem = queueRef.current.find(queueItem => queueItem.id === item.id) ?? item;
+        const result = await convertFile(latestItem);
         setQueue(prev =>
           prev.map(queueItem => {
             if (queueItem.id !== item.id) return queueItem;
@@ -480,7 +605,7 @@ export default function App() {
         );
       }
     }
-  };
+  }
 
   const handleDownloadAllZip = async () => {
     const successItems = queue.filter(
@@ -492,7 +617,10 @@ export default function App() {
     const zip = new JSZip();
     successItems.forEach(item => {
       if (item.outputName && item.outputBlob) {
-        zip.file(item.outputName, item.outputBlob);
+        zip.file(`converted/${item.outputName}`, item.outputBlob);
+      }
+      if (includeOriginalInZip) {
+        zip.file(`originals/${item.originalFile.name}`, item.originalFile);
       }
     });
 
@@ -500,7 +628,7 @@ export default function App() {
     const url = URL.createObjectURL(content);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `converted-images-${Date.now()}.zip`;
+    link.download = `localconvert-${Date.now()}.zip`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
@@ -532,13 +660,21 @@ export default function App() {
     };
   }, [queue]);
 
-  const canConvert = queue.some(item => item.status === 'idle' || item.status === 'error');
+  const canConvert = queue.some(item => item.status === 'idle' || item.status === 'error' || replaceCompleted);
   const canDownloadAll = queue.some(item => item.status === 'success');
   const isWorking = queue.some(item => item.status === 'converting');
   const acceptValue = `${SUPPORTED_TYPES.join(',')},.jpg,.jpeg,.png,.webp,.bmp,.gif,.svg,.avif`;
+  const selectedFilter = FILTER_OPTIONS.find(option => option.value === filterMode);
 
   return (
-    <div className="app-shell min-h-screen text-slate-950">
+    <div className={`app-shell theme-${theme} min-h-screen text-app`}>
+      <div className="animated-backdrop" aria-hidden="true">
+        <span className="mesh mesh-one"></span>
+        <span className="mesh mesh-two"></span>
+        <span className="mesh mesh-three"></span>
+        <span className="grid-glow"></span>
+      </div>
+
       <header className="app-header">
         <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
           <div className="flex items-center gap-3">
@@ -546,29 +682,38 @@ export default function App() {
               <Layers className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="font-display text-2xl font-bold">LocalConvert</h1>
-              <p className="text-sm text-slate-500">Private browser image conversion workspace</p>
+              <h1 className="font-display text-2xl font-black tracking-tight">LocalConvert Studio</h1>
+              <p className="muted-text text-sm">Fast private image conversion, tuned like a creative app.</p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 text-sm">
+            <button
+              type="button"
+              onClick={() => setTheme(value => (value === 'aurora' ? 'midnight' : 'aurora'))}
+              className="status-pill interactive"
+              title="Switch theme"
+            >
+              {theme === 'aurora' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+              {theme === 'aurora' ? 'Midnight' : 'Aurora'}
+            </button>
             <span className="status-pill">
-              <BadgeCheck className="h-4 w-4 text-teal-600" />
+              <ShieldCheck className="h-4 w-4 text-teal-500" />
               No uploads
             </span>
             <span className="status-pill">
-              <Sparkles className="h-4 w-4 text-amber-600" />
+              <Sparkles className="h-4 w-4 text-fuchsia-500" />
               {queue.length} queued
             </span>
             <span className="status-pill">
-              <Gauge className="h-4 w-4 text-blue-600" />
+              <Gauge className="h-4 w-4 text-sky-500" />
               {stats.completion}% done
             </span>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-7xl gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[360px_minmax(0,1fr)] lg:px-8">
+      <main className="mx-auto grid max-w-7xl gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[390px_minmax(0,1fr)] lg:px-8">
         <aside className="flex flex-col gap-4">
           <section
             onDragOver={handleDragOver}
@@ -587,18 +732,18 @@ export default function App() {
             />
 
             <motion.div
-              animate={{scale: isDragging ? 1.05 : 1, y: isDragging ? -4 : 0}}
+              animate={{scale: isDragging ? 1.06 : 1, y: isDragging ? -6 : 0}}
               className="upload-icon"
             >
               <UploadCloud className="h-10 w-10" strokeWidth={1.7} />
             </motion.div>
 
             <div className="space-y-2 text-center">
-              <h2 className="font-display text-2xl font-semibold">Drop images here</h2>
-              <p className="text-sm text-slate-500">Click to browse, drag a batch, or paste images from clipboard.</p>
+              <h2 className="font-display text-3xl font-black tracking-tight">Drop images here</h2>
+              <p className="muted-text text-sm">Browse, drag a batch, or paste from clipboard. Convert locally.</p>
             </div>
 
-            <div className="flex flex-wrap justify-center gap-2 text-xs font-semibold uppercase text-slate-500">
+            <div className="flex flex-wrap justify-center gap-2 text-xs font-bold uppercase">
               <span className="format-chip">JPG</span>
               <span className="format-chip">PNG</span>
               <span className="format-chip">WEBP</span>
@@ -610,8 +755,8 @@ export default function App() {
           <section className="panel p-4">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
-                <Settings2 className="h-5 w-5 text-slate-500" />
-                <h2 className="font-display text-lg font-semibold">Conversion setup</h2>
+                <Settings2 className="panel-icon h-5 w-5" />
+                <h2 className="font-display text-lg font-black">Conversion setup</h2>
               </div>
               <button
                 type="button"
@@ -667,14 +812,25 @@ export default function App() {
                           onChange={event => setQuality(parseFloat(event.target.value))}
                           className="w-full"
                         />
-                        <p className="mt-2 text-xs text-slate-500">Applies to JPG and WEBP output.</p>
+                        <div className="mt-3 grid grid-cols-3 gap-2">
+                          {QUALITY_PRESETS.map(preset => (
+                            <button
+                              key={preset.label}
+                              type="button"
+                              onClick={() => setQuality(preset.value)}
+                              className="preset-button"
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
                       </div>
 
                       <div>
                         <div className="mb-3 flex items-center justify-between gap-3">
                           <label className="control-label mb-0 flex items-center gap-2">
                             <Maximize2 className="h-4 w-4" />
-                            Resize bounds
+                            Resize
                           </label>
                           <label className="switch">
                             <input
@@ -686,9 +842,26 @@ export default function App() {
                           </label>
                         </div>
 
+                        <div className="mode-control mb-3">
+                          <button
+                            type="button"
+                            className={resizeMode === 'fit' ? 'is-selected' : ''}
+                            onClick={() => setResizeMode('fit')}
+                          >
+                            Fit
+                          </button>
+                          <button
+                            type="button"
+                            className={resizeMode === 'exact' ? 'is-selected' : ''}
+                            onClick={() => setResizeMode('exact')}
+                          >
+                            Crop exact
+                          </button>
+                        </div>
+
                         <div className="grid grid-cols-2 gap-3">
                           <div>
-                            <label className="mini-label">Max width</label>
+                            <label className="mini-label">Width</label>
                             <input
                               type="number"
                               min="10"
@@ -699,7 +872,7 @@ export default function App() {
                             />
                           </div>
                           <div>
-                            <label className="mini-label">Max height</label>
+                            <label className="mini-label">Height</label>
                             <input
                               type="number"
                               min="10"
@@ -711,7 +884,7 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="mt-3 grid grid-cols-4 gap-2">
+                        <div className="mt-3 grid grid-cols-3 gap-2">
                           {RESIZE_PRESETS.map(preset => (
                             <button
                               key={preset.label}
@@ -725,7 +898,56 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-[76px_minmax(0,1fr)] gap-3">
+                      <div>
+                        <label className="control-label flex items-center gap-2">
+                          <Palette className="h-4 w-4" />
+                          Finish
+                        </label>
+                        <div className="filter-grid">
+                          {FILTER_OPTIONS.map(option => (
+                            <button
+                              key={option.value}
+                              type="button"
+                              onClick={() => setFilterMode(option.value)}
+                              className={filterMode === option.value ? 'is-selected' : ''}
+                              title={option.detail}
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="control-label flex items-center gap-2">
+                          <Crop className="h-4 w-4" />
+                          Transform
+                        </label>
+                        <div className="tool-grid">
+                          <button type="button" onClick={() => setRotation(value => (value + 90) % 360)}>
+                            <RotateCw className="h-4 w-4" />
+                            {rotation} deg
+                          </button>
+                          <button
+                            type="button"
+                            className={flipHorizontal ? 'is-selected' : ''}
+                            onClick={() => setFlipHorizontal(value => !value)}
+                          >
+                            <FlipHorizontal className="h-4 w-4" />
+                            Flip X
+                          </button>
+                          <button
+                            type="button"
+                            className={flipVertical ? 'is-selected' : ''}
+                            onClick={() => setFlipVertical(value => !value)}
+                          >
+                            <FlipVertical className="h-4 w-4" />
+                            Flip Y
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-[78px_minmax(0,1fr)_minmax(0,1fr)] gap-3">
                         <div>
                           <label className="mini-label">JPG fill</label>
                           <input
@@ -737,15 +959,52 @@ export default function App() {
                           />
                         </div>
                         <div>
-                          <label className="mini-label">Filename prefix</label>
+                          <label className="mini-label">Prefix</label>
                           <input
                             type="text"
                             value={filenamePrefix}
                             onChange={event => setFilenamePrefix(event.target.value)}
+                            placeholder="client"
+                            className="input-field"
+                          />
+                        </div>
+                        <div>
+                          <label className="mini-label">Suffix</label>
+                          <input
+                            type="text"
+                            value={filenameSuffix}
+                            onChange={event => setFilenameSuffix(event.target.value)}
                             placeholder="converted"
                             className="input-field"
                           />
                         </div>
+                      </div>
+
+                      <div className="toggle-stack">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={autoConvertOnDrop}
+                            onChange={event => setAutoConvertOnDrop(event.target.checked)}
+                          />
+                          Convert immediately after adding files
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={replaceCompleted}
+                            onChange={event => setReplaceCompleted(event.target.checked)}
+                          />
+                          Re-convert completed files when settings change
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={includeOriginalInZip}
+                            onChange={event => setIncludeOriginalInZip(event.target.checked)}
+                          />
+                          Include originals inside ZIP
+                        </label>
                       </div>
                     </div>
                   </motion.div>
@@ -756,19 +1015,19 @@ export default function App() {
 
           <section className="panel p-4">
             <div className="mb-4 flex items-center gap-2">
-              <PackageOpen className="h-5 w-5 text-slate-500" />
-              <h2 className="font-display text-lg font-semibold">Batch actions</h2>
+              <PackageOpen className="panel-icon h-5 w-5" />
+              <h2 className="font-display text-lg font-black">Batch actions</h2>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
-                onClick={handleConvertAll}
+                onClick={() => handleConvertAll()}
                 disabled={!canConvert || isWorking}
                 className="primary-button col-span-2"
               >
                 <ImagePlus className="h-4 w-4" />
-                {isWorking ? 'Converting...' : 'Convert ready files'}
+                {isWorking ? 'Converting...' : 'Convert files'}
               </button>
               <button
                 type="button"
@@ -778,6 +1037,15 @@ export default function App() {
               >
                 <FileArchive className="h-4 w-4" />
                 ZIP
+              </button>
+              <button
+                type="button"
+                onClick={resetAllOutputs}
+                disabled={!canDownloadAll}
+                className="secondary-button"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Reset
               </button>
               <button
                 type="button"
@@ -792,16 +1060,31 @@ export default function App() {
                 type="button"
                 onClick={clearAll}
                 disabled={queue.length === 0}
-                className="danger-button col-span-2"
+                className="danger-button"
               >
                 <Trash2 className="h-4 w-4" />
-                Clear queue
+                Clear all
               </button>
             </div>
           </section>
         </aside>
 
         <section className="flex min-w-0 flex-col gap-4">
+          <section className="hero-panel">
+            <div>
+              <span className="eyebrow">
+                <Sparkles className="h-4 w-4" />
+                private studio mode
+              </span>
+              <h2>Convert, resize, retouch, and export without uploading a thing.</h2>
+            </div>
+            <div className="hero-actions">
+              <span>{selectedFilter?.label ?? 'Clean'} finish</span>
+              <span>{resizeEnabled ? `${resizeMode} ${maxWidth} x ${maxHeight}` : 'Original size'}</span>
+              <span>{Math.round(quality * 100)}% quality</span>
+            </div>
+          </section>
+
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <div className="metric-card">
               <span>Original size</span>
@@ -813,7 +1096,7 @@ export default function App() {
             </div>
             <div className="metric-card">
               <span>Storage change</span>
-              <strong className={stats.savedBytes >= 0 ? 'text-teal-700' : 'text-amber-700'}>
+              <strong className={stats.savedBytes >= 0 ? 'text-good' : 'text-warn'}>
                 {stats.savedBytes >= 0 ? '-' : '+'}
                 {formatFileSize(Math.abs(stats.savedBytes))}
               </strong>
@@ -830,10 +1113,10 @@ export default function App() {
           </div>
 
           <section className="panel min-h-[560px] p-4">
-            <div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="mb-4 flex flex-col gap-3 border-divider pb-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <h2 className="font-display text-xl font-semibold">Conversion queue</h2>
-                <p className="text-sm text-slate-500">
+                <h2 className="font-display text-xl font-black">Conversion queue</h2>
+                <p className="muted-text text-sm">
                   {stats.pending} ready, {stats.converting} running, {stats.success} done, {stats.error} errors
                 </p>
               </div>
@@ -851,10 +1134,9 @@ export default function App() {
                 <div className="empty-icon">
                   <ClipboardPaste className="h-8 w-8" />
                 </div>
-                <h3 className="font-display text-2xl font-semibold">Your batch is ready when you are</h3>
-                <p className="max-w-md text-center text-sm text-slate-500">
-                  Add images from your device or paste from the clipboard. Each file keeps its own target format,
-                  status, preview, and output size.
+                <h3 className="font-display text-2xl font-black">Your batch is ready when you are</h3>
+                <p className="muted-text max-w-md text-center text-sm">
+                  Add images, choose a finish, crop for platforms, and export a polished ZIP in one pass.
                 </p>
               </div>
             ) : (
@@ -876,12 +1158,12 @@ export default function App() {
                         className="queue-item"
                       >
                         <div className="thumb-frame">
-                          <img src={item.previewUrl} alt="" />
+                          <img src={item.previewUrl} alt="" style={{filter: getFilterCss(filterMode)}} />
                         </div>
 
                         <div className="min-w-0 flex-1">
                           <div className="mb-1 flex flex-wrap items-center gap-2">
-                            <p className="truncate font-semibold text-slate-950" title={item.originalFile.name}>
+                            <p className="truncate font-bold" title={item.originalFile.name}>
                               {item.originalFile.name}
                             </p>
                             <span className={`queue-status status-${item.status}`}>
@@ -892,7 +1174,7 @@ export default function App() {
                             </span>
                           </div>
 
-                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-sm text-slate-500">
+                          <div className="muted-text flex flex-wrap gap-x-3 gap-y-1 text-sm">
                             <span>{formatFileSize(item.originalFile.size)}</span>
                             <span>{getSourceLabel(item.originalFile)}</span>
                             <span>{formatDimensions(item.originalDimensions)}</span>
@@ -900,12 +1182,10 @@ export default function App() {
 
                           {item.status === 'success' && item.outputSize && (
                             <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm">
-                              <span className="text-slate-600">
-                                Output {formatFileSize(item.outputSize)}
-                              </span>
-                              <span className="text-slate-600">{formatDimensions(item.outputDimensions)}</span>
+                              <span className="soft-text">Output {formatFileSize(item.outputSize)}</span>
+                              <span className="soft-text">{formatDimensions(item.outputDimensions)}</span>
                               {outputDelta !== null && (
-                                <span className={outputDelta >= 0 ? 'text-teal-700' : 'text-amber-700'}>
+                                <span className={outputDelta >= 0 ? 'text-good' : 'text-warn'}>
                                   {outputDelta >= 0 ? `${outputDelta}% smaller` : `${Math.abs(outputDelta)}% larger`}
                                 </span>
                               )}
@@ -913,13 +1193,13 @@ export default function App() {
                           )}
 
                           {item.status === 'error' && item.errorMessage && (
-                            <p className="mt-2 text-sm text-red-600">{item.errorMessage}</p>
+                            <p className="mt-2 text-sm text-red-500">{item.errorMessage}</p>
                           )}
                         </div>
 
-                        <div className="flex w-full flex-col gap-3 sm:w-auto sm:min-w-[220px] sm:flex-row sm:items-center sm:justify-end">
+                        <div className="flex w-full flex-col gap-3 sm:w-auto sm:min-w-[252px] sm:flex-row sm:items-center sm:justify-end">
                           <div className="flex items-center gap-2">
-                            <ArrowRight className="hidden h-4 w-4 text-slate-400 sm:block" />
+                            <ArrowRight className="muted-icon hidden h-4 w-4 sm:block" />
                             <select
                               value={item.targetFormat}
                               onChange={event => updateItemFormat(item.id, event.target.value as TargetFormat)}
@@ -948,6 +1228,15 @@ export default function App() {
                                 <Download className="h-4 w-4" />
                               </a>
                             )}
+
+                            <button
+                              type="button"
+                              onClick={() => duplicateItem(item.id)}
+                              className="icon-button"
+                              title="Duplicate file"
+                            >
+                              <Zap className="h-4 w-4" />
+                            </button>
 
                             {(item.status === 'success' || item.status === 'error') && (
                               <button
@@ -984,10 +1273,11 @@ export default function App() {
         </section>
       </main>
 
-      <footer className="mx-auto max-w-7xl px-4 pb-8 text-sm text-slate-500 sm:px-6 lg:px-8">
-        <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-5">
+      <footer className="mx-auto max-w-7xl px-4 pb-8 text-sm sm:px-6 lg:px-8">
+        <div className="footer-line">
           <ImageIcon className="h-4 w-4" />
           <span>All conversion work stays inside the browser tab.</span>
+          <BadgeCheck className="h-4 w-4" />
         </div>
       </footer>
     </div>
