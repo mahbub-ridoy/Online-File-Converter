@@ -20,7 +20,6 @@ import {
   Palette,
   RefreshCw,
   RotateCw,
-  Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -35,7 +34,7 @@ import JSZip from 'jszip';
 
 type TargetFormat = 'image/jpeg' | 'image/png' | 'image/webp';
 type QueueStatus = 'idle' | 'converting' | 'success' | 'error';
-type ResizeMode = 'fit' | 'exact';
+type ResizeMode = 'fit' | 'exact' | 'pad' | 'stretch';
 type ThemeMode = 'aurora' | 'midnight';
 type FilterMode = 'none' | 'vivid' | 'mono' | 'warm' | 'cool' | 'soft';
 
@@ -90,7 +89,7 @@ const RESIZE_PRESETS: ResizePreset[] = [
   {label: '4K', width: 3840, height: 2160, enabled: true, mode: 'fit'},
   {label: 'HD', width: 1920, height: 1080, enabled: true, mode: 'fit'},
   {label: 'Square', width: 1080, height: 1080, enabled: true, mode: 'exact'},
-  {label: 'Story', width: 1080, height: 1920, enabled: true, mode: 'exact'},
+  {label: 'Story', width: 1080, height: 1920, enabled: true, mode: 'pad'},
   {label: 'Avatar', width: 512, height: 512, enabled: true, mode: 'exact'},
 ];
 
@@ -195,15 +194,16 @@ function revokeItemUrls(item: FileQueueItem, outputOnly = false) {
   }
 }
 
-function getFilterCss(filter: FilterMode) {
-  return FILTER_OPTIONS.find(option => option.value === filter)?.css ?? 'none';
+function getFilterCss(filter: FilterMode, brightness = 100, contrast = 100, saturation = 100) {
+  const preset = FILTER_OPTIONS.find(option => option.value === filter)?.css ?? 'none';
+  const manual = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`;
+  return preset === 'none' ? manual : `${preset} ${manual}`;
 }
 
 export default function App() {
   const [queue, setQueue] = useState<FileQueueItem[]>([]);
   const [globalFormat, setGlobalFormat] = useState<TargetFormat>('image/webp');
   const [isDragging, setIsDragging] = useState(false);
-  const [showSettings, setShowSettings] = useState(true);
   const [quality, setQuality] = useState(0.88);
   const [resizeEnabled, setResizeEnabled] = useState(false);
   const [resizeMode, setResizeMode] = useState<ResizeMode>('fit');
@@ -216,6 +216,10 @@ export default function App() {
   const [rotation, setRotation] = useState(0);
   const [flipHorizontal, setFlipHorizontal] = useState(false);
   const [flipVertical, setFlipVertical] = useState(false);
+  const [brightness, setBrightness] = useState(100);
+  const [contrast, setContrast] = useState(100);
+  const [saturation, setSaturation] = useState(100);
+  const [paddingPercent, setPaddingPercent] = useState(0);
   const [includeOriginalInZip, setIncludeOriginalInZip] = useState(false);
   const [autoConvertOnDrop, setAutoConvertOnDrop] = useState(false);
   const [replaceCompleted, setReplaceCompleted] = useState(false);
@@ -435,7 +439,7 @@ export default function App() {
     const widthLimit = Math.max(10, maxWidth);
     const heightLimit = Math.max(10, maxHeight);
 
-    if (resizeMode === 'exact') {
+    if (resizeMode === 'exact' || resizeMode === 'pad' || resizeMode === 'stretch') {
       return {width: widthLimit, height: heightLimit};
     }
 
@@ -467,7 +471,7 @@ export default function App() {
     const drawHeight = rotated ? dimensions.width : dimensions.height;
 
     context.save();
-    context.filter = getFilterCss(filterMode);
+    context.filter = getFilterCss(filterMode, brightness, contrast, saturation);
     context.translate(dimensions.width / 2, dimensions.height / 2);
     context.rotate((normalizedRotation * Math.PI) / 180);
     context.scale(flipHorizontal ? -1 : 1, flipVertical ? -1 : 1);
@@ -479,6 +483,16 @@ export default function App() {
       const cropX = (sourceWidth - cropWidth) / 2;
       const cropY = (sourceHeight - cropHeight) / 2;
       context.drawImage(image, cropX, cropY, cropWidth, cropHeight, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+    } else if (resizeMode === 'pad' && resizeEnabled) {
+      const safePadding = Math.min(Math.max(paddingPercent, 0), 45) / 100;
+      const innerWidth = drawWidth * (1 - safePadding * 2);
+      const innerHeight = drawHeight * (1 - safePadding * 2);
+      const scale = Math.min(innerWidth / sourceWidth, innerHeight / sourceHeight);
+      const paddedWidth = sourceWidth * scale;
+      const paddedHeight = sourceHeight * scale;
+      context.drawImage(image, -paddedWidth / 2, -paddedHeight / 2, paddedWidth, paddedHeight);
+    } else if (resizeMode === 'stretch' && resizeEnabled) {
+      context.drawImage(image, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
     } else {
       context.drawImage(image, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
     }
@@ -519,7 +533,7 @@ export default function App() {
         context.imageSmoothingEnabled = true;
         context.imageSmoothingQuality = 'high';
 
-        if (item.targetFormat === 'image/jpeg') {
+        if (item.targetFormat === 'image/jpeg' || (resizeEnabled && resizeMode === 'pad')) {
           context.fillStyle = jpegBackground;
           context.fillRect(0, 0, canvas.width, canvas.height);
         } else {
@@ -713,8 +727,26 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-7xl gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[390px_minmax(0,1fr)] lg:px-8">
-        <aside className="flex flex-col gap-4">
+      <main className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
+        <section className="hero-panel compact-hero">
+          <div>
+            <span className="eyebrow">
+              <Sparkles className="h-4 w-4" />
+              private studio mode
+            </span>
+            <h2>Convert, resize, format, and download images locally.</h2>
+            <p className="muted-text mt-3 max-w-2xl text-sm">
+              A clean three-step flow inspired by modern converters: add files, choose output, then tune optional formatting.
+            </p>
+          </div>
+          <div className="hero-actions">
+            <span>{selectedFilter?.label ?? 'Clean'} finish</span>
+            <span>{resizeEnabled ? `${resizeMode} ${maxWidth} x ${maxHeight}` : 'Original size'}</span>
+            <span>{Math.round(quality * 100)}% quality</span>
+          </div>
+        </section>
+
+        <section className="converter-flow">
           <section
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -739,8 +771,8 @@ export default function App() {
             </motion.div>
 
             <div className="space-y-2 text-center">
-              <h2 className="font-display text-3xl font-black tracking-tight">Drop images here</h2>
-              <p className="muted-text text-sm">Browse, drag a batch, or paste from clipboard. Convert locally.</p>
+              <h3 className="font-display text-2xl font-black tracking-tight">Choose or drop files</h3>
+              <p className="muted-text text-sm">Drag images here, browse, or paste from clipboard.</p>
             </div>
 
             <div className="flex flex-wrap justify-center gap-2 text-xs font-bold uppercase">
@@ -752,283 +784,47 @@ export default function App() {
             </div>
           </section>
 
-          <section className="panel p-4">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <Settings2 className="panel-icon h-5 w-5" />
-                <h2 className="font-display text-lg font-black">Conversion setup</h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowSettings(value => !value)}
-                className="icon-button"
-                title={showSettings ? 'Hide settings' : 'Show settings'}
-              >
-                <SlidersHorizontal className="h-4 w-4" />
-              </button>
+          <section className="panel flow-card">
+            <span className="step-badge">2</span>
+            <div>
+              <h3 className="font-display text-lg font-black">Choose output</h3>
+              <p className="muted-text text-sm">Pick the format for new and ready files.</p>
             </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="control-label">Target format</label>
-                <div className="segmented-control">
-                  {FORMAT_OPTIONS.map(option => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => handleGlobalFormatChange(option.value)}
-                      className={globalFormat === option.value ? 'is-selected' : ''}
-                      title={option.detail}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <AnimatePresence initial={false}>
-                {showSettings && (
-                  <motion.div
-                    initial={{height: 0, opacity: 0}}
-                    animate={{height: 'auto', opacity: 1}}
-                    exit={{height: 0, opacity: 0}}
-                    className="overflow-hidden"
-                  >
-                    <div className="space-y-5 pt-1">
-                      <div>
-                        <div className="mb-2 flex items-center justify-between gap-3">
-                          <label className="control-label mb-0 flex items-center gap-2">
-                            <SlidersHorizontal className="h-4 w-4" />
-                            Quality
-                          </label>
-                          <span className="value-badge">{Math.round(quality * 100)}%</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="0.1"
-                          max="1"
-                          step="0.05"
-                          value={quality}
-                          onChange={event => setQuality(parseFloat(event.target.value))}
-                          className="w-full"
-                        />
-                        <div className="mt-3 grid grid-cols-3 gap-2">
-                          {QUALITY_PRESETS.map(preset => (
-                            <button
-                              key={preset.label}
-                              type="button"
-                              onClick={() => setQuality(preset.value)}
-                              className="preset-button"
-                            >
-                              {preset.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="mb-3 flex items-center justify-between gap-3">
-                          <label className="control-label mb-0 flex items-center gap-2">
-                            <Maximize2 className="h-4 w-4" />
-                            Resize
-                          </label>
-                          <label className="switch">
-                            <input
-                              type="checkbox"
-                              checked={resizeEnabled}
-                              onChange={event => setResizeEnabled(event.target.checked)}
-                            />
-                            <span></span>
-                          </label>
-                        </div>
-
-                        <div className="mode-control mb-3">
-                          <button
-                            type="button"
-                            className={resizeMode === 'fit' ? 'is-selected' : ''}
-                            onClick={() => setResizeMode('fit')}
-                          >
-                            Fit
-                          </button>
-                          <button
-                            type="button"
-                            className={resizeMode === 'exact' ? 'is-selected' : ''}
-                            onClick={() => setResizeMode('exact')}
-                          >
-                            Crop exact
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <label className="mini-label">Width</label>
-                            <input
-                              type="number"
-                              min="10"
-                              value={maxWidth}
-                              disabled={!resizeEnabled}
-                              onChange={event => setMaxWidth(Math.max(10, Number(event.target.value) || 10))}
-                              className="input-field"
-                            />
-                          </div>
-                          <div>
-                            <label className="mini-label">Height</label>
-                            <input
-                              type="number"
-                              min="10"
-                              value={maxHeight}
-                              disabled={!resizeEnabled}
-                              onChange={event => setMaxHeight(Math.max(10, Number(event.target.value) || 10))}
-                              className="input-field"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="mt-3 grid grid-cols-3 gap-2">
-                          {RESIZE_PRESETS.map(preset => (
-                            <button
-                              key={preset.label}
-                              type="button"
-                              onClick={() => applyResizePreset(preset)}
-                              className="preset-button"
-                            >
-                              {preset.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="control-label flex items-center gap-2">
-                          <Palette className="h-4 w-4" />
-                          Finish
-                        </label>
-                        <div className="filter-grid">
-                          {FILTER_OPTIONS.map(option => (
-                            <button
-                              key={option.value}
-                              type="button"
-                              onClick={() => setFilterMode(option.value)}
-                              className={filterMode === option.value ? 'is-selected' : ''}
-                              title={option.detail}
-                            >
-                              {option.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="control-label flex items-center gap-2">
-                          <Crop className="h-4 w-4" />
-                          Transform
-                        </label>
-                        <div className="tool-grid">
-                          <button type="button" onClick={() => setRotation(value => (value + 90) % 360)}>
-                            <RotateCw className="h-4 w-4" />
-                            {rotation} deg
-                          </button>
-                          <button
-                            type="button"
-                            className={flipHorizontal ? 'is-selected' : ''}
-                            onClick={() => setFlipHorizontal(value => !value)}
-                          >
-                            <FlipHorizontal className="h-4 w-4" />
-                            Flip X
-                          </button>
-                          <button
-                            type="button"
-                            className={flipVertical ? 'is-selected' : ''}
-                            onClick={() => setFlipVertical(value => !value)}
-                          >
-                            <FlipVertical className="h-4 w-4" />
-                            Flip Y
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-[78px_minmax(0,1fr)_minmax(0,1fr)] gap-3">
-                        <div>
-                          <label className="mini-label">JPG fill</label>
-                          <input
-                            type="color"
-                            value={jpegBackground}
-                            onChange={event => setJpegBackground(event.target.value)}
-                            className="color-input"
-                            title="JPEG background for transparent images"
-                          />
-                        </div>
-                        <div>
-                          <label className="mini-label">Prefix</label>
-                          <input
-                            type="text"
-                            value={filenamePrefix}
-                            onChange={event => setFilenamePrefix(event.target.value)}
-                            placeholder="client"
-                            className="input-field"
-                          />
-                        </div>
-                        <div>
-                          <label className="mini-label">Suffix</label>
-                          <input
-                            type="text"
-                            value={filenameSuffix}
-                            onChange={event => setFilenameSuffix(event.target.value)}
-                            placeholder="converted"
-                            className="input-field"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="toggle-stack">
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={autoConvertOnDrop}
-                            onChange={event => setAutoConvertOnDrop(event.target.checked)}
-                          />
-                          Convert immediately after adding files
-                        </label>
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={replaceCompleted}
-                            onChange={event => setReplaceCompleted(event.target.checked)}
-                          />
-                          Re-convert completed files when settings change
-                        </label>
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={includeOriginalInZip}
-                            onChange={event => setIncludeOriginalInZip(event.target.checked)}
-                          />
-                          Include originals inside ZIP
-                        </label>
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+            <div className="segmented-control">
+              {FORMAT_OPTIONS.map(option => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => handleGlobalFormatChange(option.value)}
+                  className={globalFormat === option.value ? 'is-selected' : ''}
+                  title={option.detail}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <div className="mini-summary">
+              <span>{queue.length} files</span>
+              <span>{formatFileSize(stats.totalOriginal)}</span>
             </div>
           </section>
 
-          <section className="panel p-4">
-            <div className="mb-4 flex items-center gap-2">
-              <PackageOpen className="panel-icon h-5 w-5" />
-              <h2 className="font-display text-lg font-black">Batch actions</h2>
+          <section className="panel flow-card">
+            <span className="step-badge">3</span>
+            <div>
+              <h3 className="font-display text-lg font-black">Convert</h3>
+              <p className="muted-text text-sm">Process everything in this browser tab.</p>
             </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => handleConvertAll()}
-                disabled={!canConvert || isWorking}
-                className="primary-button col-span-2"
-              >
-                <ImagePlus className="h-4 w-4" />
-                {isWorking ? 'Converting...' : 'Convert files'}
-              </button>
+            <button
+              type="button"
+              onClick={() => handleConvertAll()}
+              disabled={!canConvert || isWorking}
+              className="primary-button"
+            >
+              <ImagePlus className="h-4 w-4" />
+              {isWorking ? 'Converting...' : 'Convert files'}
+            </button>
+            <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={handleDownloadAllZip}
@@ -1038,52 +834,220 @@ export default function App() {
                 <FileArchive className="h-4 w-4" />
                 ZIP
               </button>
-              <button
-                type="button"
-                onClick={resetAllOutputs}
-                disabled={!canDownloadAll}
-                className="secondary-button"
-              >
+              <button type="button" onClick={clearAll} disabled={queue.length === 0} className="danger-button">
+                <Trash2 className="h-4 w-4" />
+                Clear
+              </button>
+            </div>
+          </section>
+        </section>
+
+        <section className="options-grid">
+          <section className="panel option-card">
+            <div className="option-heading">
+              <SlidersHorizontal className="panel-icon h-5 w-5" />
+              <div>
+                <h3>Quality</h3>
+                <p>Compression and output size.</p>
+              </div>
+              <span className="value-badge">{Math.round(quality * 100)}%</span>
+            </div>
+            <input
+              type="range"
+              min="0.1"
+              max="1"
+              step="0.05"
+              value={quality}
+              onChange={event => setQuality(parseFloat(event.target.value))}
+              className="w-full"
+            />
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              {QUALITY_PRESETS.map(preset => (
+                <button key={preset.label} type="button" onClick={() => setQuality(preset.value)} className="preset-button">
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel option-card wide">
+            <div className="option-heading">
+              <Maximize2 className="panel-icon h-5 w-5" />
+              <div>
+                <h3>Resize and canvas</h3>
+                <p>Fit, crop, pad, or stretch to exact dimensions.</p>
+              </div>
+              <label className="switch">
+                <input type="checkbox" checked={resizeEnabled} onChange={event => setResizeEnabled(event.target.checked)} />
+                <span></span>
+              </label>
+            </div>
+            <div className="mode-control four">
+              {(['fit', 'exact', 'pad', 'stretch'] as ResizeMode[]).map(mode => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={resizeMode === mode ? 'is-selected' : ''}
+                  onClick={() => setResizeMode(mode)}
+                >
+                  {mode === 'exact' ? 'Crop' : mode}
+                </button>
+              ))}
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-3">
+              <div>
+                <label className="mini-label">Width</label>
+                <input
+                  type="number"
+                  min="10"
+                  value={maxWidth}
+                  disabled={!resizeEnabled}
+                  onChange={event => setMaxWidth(Math.max(10, Number(event.target.value) || 10))}
+                  className="input-field"
+                />
+              </div>
+              <div>
+                <label className="mini-label">Height</label>
+                <input
+                  type="number"
+                  min="10"
+                  value={maxHeight}
+                  disabled={!resizeEnabled}
+                  onChange={event => setMaxHeight(Math.max(10, Number(event.target.value) || 10))}
+                  className="input-field"
+                />
+              </div>
+              <div>
+                <label className="mini-label">Padding</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="45"
+                  value={paddingPercent}
+                  disabled={!resizeEnabled || resizeMode !== 'pad'}
+                  onChange={event => setPaddingPercent(Math.min(45, Math.max(0, Number(event.target.value) || 0)))}
+                  className="input-field"
+                />
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2 lg:grid-cols-6">
+              {RESIZE_PRESETS.map(preset => (
+                <button key={preset.label} type="button" onClick={() => applyResizePreset(preset)} className="preset-button">
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel option-card">
+            <div className="option-heading">
+              <Palette className="panel-icon h-5 w-5" />
+              <div>
+                <h3>Color finish</h3>
+                <p>Preset looks plus manual tuning.</p>
+              </div>
+            </div>
+            <div className="filter-grid">
+              {FILTER_OPTIONS.map(option => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setFilterMode(option.value)}
+                  className={filterMode === option.value ? 'is-selected' : ''}
+                  title={option.detail}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <div className="slider-stack">
+              <label>Brightness <span>{brightness}%</span></label>
+              <input type="range" min="50" max="150" value={brightness} onChange={event => setBrightness(Number(event.target.value))} />
+              <label>Contrast <span>{contrast}%</span></label>
+              <input type="range" min="50" max="150" value={contrast} onChange={event => setContrast(Number(event.target.value))} />
+              <label>Saturation <span>{saturation}%</span></label>
+              <input type="range" min="0" max="200" value={saturation} onChange={event => setSaturation(Number(event.target.value))} />
+            </div>
+          </section>
+
+          <section className="panel option-card">
+            <div className="option-heading">
+              <Crop className="panel-icon h-5 w-5" />
+              <div>
+                <h3>Transform</h3>
+                <p>Rotate and mirror before export.</p>
+              </div>
+            </div>
+            <div className="tool-grid">
+              <button type="button" onClick={() => setRotation(value => (value + 90) % 360)}>
+                <RotateCw className="h-4 w-4" />
+                {rotation} deg
+              </button>
+              <button type="button" className={flipHorizontal ? 'is-selected' : ''} onClick={() => setFlipHorizontal(value => !value)}>
+                <FlipHorizontal className="h-4 w-4" />
+                Flip X
+              </button>
+              <button type="button" className={flipVertical ? 'is-selected' : ''} onClick={() => setFlipVertical(value => !value)}>
+                <FlipVertical className="h-4 w-4" />
+                Flip Y
+              </button>
+            </div>
+            <div className="mt-3 grid grid-cols-[78px_minmax(0,1fr)_minmax(0,1fr)] gap-3">
+              <div>
+                <label className="mini-label">Fill</label>
+                <input
+                  type="color"
+                  value={jpegBackground}
+                  onChange={event => setJpegBackground(event.target.value)}
+                  className="color-input"
+                  title="Background fill for JPEG and padded canvas"
+                />
+              </div>
+              <div>
+                <label className="mini-label">Prefix</label>
+                <input type="text" value={filenamePrefix} onChange={event => setFilenamePrefix(event.target.value)} placeholder="client" className="input-field" />
+              </div>
+              <div>
+                <label className="mini-label">Suffix</label>
+                <input type="text" value={filenameSuffix} onChange={event => setFilenameSuffix(event.target.value)} placeholder="converted" className="input-field" />
+              </div>
+            </div>
+          </section>
+
+          <section className="panel option-card">
+            <div className="option-heading">
+              <PackageOpen className="panel-icon h-5 w-5" />
+              <div>
+                <h3>Batch behavior</h3>
+                <p>Decide how exports are handled.</p>
+              </div>
+            </div>
+            <div className="toggle-stack">
+              <label>
+                <input type="checkbox" checked={autoConvertOnDrop} onChange={event => setAutoConvertOnDrop(event.target.checked)} />
+                Convert immediately after adding files
+              </label>
+              <label>
+                <input type="checkbox" checked={replaceCompleted} onChange={event => setReplaceCompleted(event.target.checked)} />
+                Re-convert completed files when settings change
+              </label>
+              <label>
+                <input type="checkbox" checked={includeOriginalInZip} onChange={event => setIncludeOriginalInZip(event.target.checked)} />
+                Include originals inside ZIP
+              </label>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button type="button" onClick={resetAllOutputs} disabled={!canDownloadAll} className="secondary-button">
                 <RefreshCw className="h-4 w-4" />
                 Reset
               </button>
-              <button
-                type="button"
-                onClick={clearCompleted}
-                disabled={!canDownloadAll}
-                className="secondary-button"
-              >
+              <button type="button" onClick={clearCompleted} disabled={!canDownloadAll} className="secondary-button">
                 <CheckCircle2 className="h-4 w-4" />
                 Clear done
               </button>
-              <button
-                type="button"
-                onClick={clearAll}
-                disabled={queue.length === 0}
-                className="danger-button"
-              >
-                <Trash2 className="h-4 w-4" />
-                Clear all
-              </button>
             </div>
           </section>
-        </aside>
-
-        <section className="flex min-w-0 flex-col gap-4">
-          <section className="hero-panel">
-            <div>
-              <span className="eyebrow">
-                <Sparkles className="h-4 w-4" />
-                private studio mode
-              </span>
-              <h2>Convert, resize, retouch, and export without uploading a thing.</h2>
-            </div>
-            <div className="hero-actions">
-              <span>{selectedFilter?.label ?? 'Clean'} finish</span>
-              <span>{resizeEnabled ? `${resizeMode} ${maxWidth} x ${maxHeight}` : 'Original size'}</span>
-              <span>{Math.round(quality * 100)}% quality</span>
-            </div>
-          </section>
+        </section>
 
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <div className="metric-card">
@@ -1158,7 +1122,7 @@ export default function App() {
                         className="queue-item"
                       >
                         <div className="thumb-frame">
-                          <img src={item.previewUrl} alt="" style={{filter: getFilterCss(filterMode)}} />
+                          <img src={item.previewUrl} alt="" style={{filter: getFilterCss(filterMode, brightness, contrast, saturation)}} />
                         </div>
 
                         <div className="min-w-0 flex-1">
@@ -1270,7 +1234,6 @@ export default function App() {
               </ul>
             )}
           </section>
-        </section>
       </main>
 
       <footer className="mx-auto max-w-7xl px-4 pb-8 text-sm sm:px-6 lg:px-8">
