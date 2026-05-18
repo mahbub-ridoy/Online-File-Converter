@@ -8,13 +8,10 @@ LocalConvert is a private, client-side image converter built with React and Vite
 - Drag and drop, file picker, and clipboard paste support
 - Source previews with per-file status and output size
 - ZIP download for completed batches
-- Aurora and midnight themes with an animated gradient mesh UI
-- Cleaner step-based converter layout with upload, output choice, conversion, and grouped option cards
-- Optional fit, exact-crop, padded-canvas, or stretch resize modes with quick presets for 4K, HD, square, story, and avatar exports
-- JPG quality presets, background fill color, and output-size savings
-- Image finish filters, manual brightness, contrast, saturation, padding, rotation, horizontal flip, and vertical flip
-- Filename prefixing and suffixing for exported files
-- Optional auto-convert on add, reconvert completed files, and include originals in ZIP
+- Aurora and midnight themes with a calmer lightweight interface
+- Simple upload-first converter layout with only the core options on screen
+- Optional proportional resize with max width and height
+- JPG/WEBP quality control and output-size savings
 - Browser-side support for common image sources including JPG, PNG, WEBP, SVG, BMP, GIF, and AVIF when supported by the browser
 
 ## Run Locally
