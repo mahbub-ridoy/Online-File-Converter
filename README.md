@@ -1,20 +1,27 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# LocalConvert
 
-# Run and deploy your AI Studio app
+LocalConvert is a private, client-side image converter built with React and Vite. It converts images directly in the browser, so files are not uploaded to a server.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/f4b1d8cd-1a54-44f9-bc36-3c19890cf693
+- Convert batches to JPG, PNG, or WEBP
+- Drag and drop, file picker, and clipboard paste support
+- Source previews with per-file status and output size
+- ZIP download for completed batches
+- Optional resize bounds with quick presets
+- JPG quality control and background fill color
+- Filename prefixing for exported files
+- Browser-side support for common image sources including JPG, PNG, WEBP, SVG, BMP, GIF, and AVIF when supported by the browser
 
 ## Run Locally
 
-**Prerequisites:**  Node.js
-
+**Prerequisites:** Node.js
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
+2. Run the app:
    `npm run dev`
+
+## Privacy
+
+All conversion work happens inside your browser tab. The app does not upload your images.
